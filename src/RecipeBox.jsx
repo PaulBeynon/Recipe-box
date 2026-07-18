@@ -542,21 +542,49 @@ Return strict JSON only — no markdown fences, no preamble, no commentary — i
 // Looks up a real, verified photo on Wikimedia Commons for a dish name. Unlike asking
 // Claude to guess a URL from web search snippets, this confirms the file actually exists
 // (and is a real image, not an SVG logo/icon) before we ever try to use it. Free, no key,
-// CORS-enabled via origin=*. Returns a direct image URL or null if nothing suitable found.
+// CORS-enabled via origin=*. Scores results by how well the dish's own words match the
+// filename, since Commons' own relevance ranking can surface a topically-related but wrong
+// dish (e.g. a different coconut-based dish for "Thai Coconut Jasmine Rice"). Returns a
+// direct image URL, or null if nothing sufficiently matches.
+const TITLE_STOPWORDS = new Set(['and', 'with', 'the', 'a', 'an', 'of', 'in', 'on', 'for', 'to', 'from', 'style', 'recipe', 'dish']);
+function significantWords(text) {
+  return (text || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length >= 3 && !TITLE_STOPWORDS.has(w));
+}
 async function findImageOnWikimedia(title, tags) {
   try {
     const query = [title, ...(tags || []).slice(0, 2), 'food'].filter(Boolean).join(' ');
-    const url = `https://commons.wikimedia.org/w/api.php?action=query&generator=search&gsrsearch=${encodeURIComponent(query)}&gsrnamespace=6&gsrlimit=8&prop=imageinfo&iiprop=url|mime&iiurlwidth=800&format=json&origin=*`;
+    const url = `https://commons.wikimedia.org/w/api.php?action=query&generator=search&gsrsearch=${encodeURIComponent(query)}&gsrnamespace=6&gsrlimit=10&prop=imageinfo&iiprop=url|mime&iiurlwidth=800&format=json&origin=*`;
     const res = await fetch(url);
     if (!res.ok) return null;
     const data = await res.json();
     const pages = data && data.query && data.query.pages;
     if (!pages) return null;
-    const candidate = Object.values(pages)
-      .map((p) => p.imageinfo && p.imageinfo[0])
-      .find((info) => info && /^image\/(jpeg|png|webp)$/.test(info.mime));
-    if (!candidate) return null;
-    return candidate.thumburl || candidate.url;
+
+    const titleWords = significantWords(title);
+    if (titleWords.length === 0) return null;
+
+    let best = null;
+    let bestScore = 0;
+    for (const page of Object.values(pages)) {
+      const info = page.imageinfo && page.imageinfo[0];
+      if (!info || !/^image\/(jpeg|png|webp)$/.test(info.mime)) continue;
+      const fileWords = new Set(significantWords(page.title));
+      const matches = titleWords.filter((w) => fileWords.has(w)).length;
+      const score = matches / titleWords.length;
+      if (score > bestScore) {
+        bestScore = score;
+        best = info;
+      }
+    }
+    // Require at least half of the dish's significant words to show up in the filename —
+    // otherwise it's a coincidental topical match rather than a genuine one, so we let the
+    // Claude web-search fallback take a shot instead of returning a confidently wrong photo.
+    if (!best || bestScore < 0.5) return null;
+    return best.thumburl || best.url;
   } catch {
     return null;
   }
@@ -590,7 +618,7 @@ Return strict JSON only — no markdown fences, no preamble, no commentary — i
 
   const data = await postToClaudeWithRetry({
     model: 'claude-sonnet-4-6',
-    max_tokens: 500,
+    max_tokens: 1024,
     messages: [{ role: 'user', content: prompt }],
     tools: [{ type: 'web_search_20250305', name: 'web_search' }],
   });

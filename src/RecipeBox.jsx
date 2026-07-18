@@ -2386,7 +2386,7 @@ export default function RecipeBox({ onSignOut }) {
       await persistIndex(newIndex);
     } catch (err) {
       console.error('handleFindImage failed:', err);
-      setErrorMsg('Could not search for a photo right now. Please try again.');
+      setErrorMsg(`Could not search for a photo right now: ${err?.message || 'unknown error'}`);
     } finally {
       setFindingImage(false);
     }

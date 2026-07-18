@@ -47,6 +47,23 @@ exports.claudeProxy = onRequest(
       return;
     }
 
+    // ---- reject disabled accounts immediately ----
+    // verifyIdToken() alone doesn't check disabled status — a valid, unexpired token from a
+    // disabled account would otherwise still pass. Checking the live account record here means
+    // disabling someone in the Firebase Console takes effect on their very next request, not
+    // whenever their existing token happens to expire.
+    try {
+      const userRecord = await admin.auth().getUser(uid);
+      if (userRecord.disabled) {
+        res.status(403).json({ error: 'This account has been disabled.' });
+        return;
+      }
+    } catch (err) {
+      logger.error('Account status check failed', err);
+      res.status(500).json({ error: 'Internal error checking account status' });
+      return;
+    }
+
     // ---- per-user daily rate limit ----
     const usageRef = db.collection('usage').doc(`${uid}_${todayKey()}`);
     try {

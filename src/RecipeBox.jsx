@@ -6,7 +6,7 @@ import {
   ShoppingCart, CheckSquare, Square, ListPlus, Sparkles, Play, Pause, RotateCcw, Calendar, Copy, ExternalLink,
   Upload, Globe, Leaf, LogOut, Mic, MicOff,
 } from 'lucide-react';
-import { CLOUD_FUNCTION_URL, auth } from './firebase-init';
+import { CLOUD_FUNCTION_URL, FETCH_PAGE_IMAGE_URL, auth } from './firebase-init';
 
 // Every Anthropic API call is routed through our own Cloud Function rather than
 // api.anthropic.com directly — the function holds the real API key server-side and
@@ -503,6 +503,25 @@ Return exactly this shape:
 
 function looksLikeUrl(str) {
   return /^https?:\/\/\S+$/i.test(str.trim());
+}
+
+// Asks the Cloud Function to fetch a page and read its real og:image/twitter:image meta tag —
+// a genuine value the page itself set, not a model's guess. Fails soft (empty string) on any
+// problem, since the caller always has extractRecipeFromUrl's imageUrl guess as a fallback.
+async function fetchPageImage(url) {
+  try {
+    const headers = await getAuthedHeaders();
+    const response = await fetch(FETCH_PAGE_IMAGE_URL, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ url }),
+    });
+    if (!response.ok) return '';
+    const data = await response.json();
+    return data && data.imageUrl ? data.imageUrl : '';
+  } catch {
+    return '';
+  }
 }
 
 // Writes a method for a recipe that has ingredients but no instructions yet — same
@@ -2289,9 +2308,10 @@ export default function RecipeBox({ onSignOut }) {
     setUrlImageBlocked(false);
     try {
       const isUrl = looksLikeUrl(pastedText);
-      const extracted = isUrl
-        ? await extractRecipeFromUrl(pastedText.trim())
-        : await extractRecipeFromText(pastedText);
+      const [extracted, pageImageUrl] = await Promise.all([
+        isUrl ? extractRecipeFromUrl(pastedText.trim()) : extractRecipeFromText(pastedText),
+        isUrl ? fetchPageImage(pastedText.trim()) : Promise.resolve(''),
+      ]);
       setForm({
         title: extracted.title || '',
         servings: extracted.servings || '',
@@ -2300,8 +2320,12 @@ export default function RecipeBox({ onSignOut }) {
         steps: (extracted.steps || []).join('\n'),
         tags: (extracted.tags || []).join(', '),
       });
-      if (isUrl && extracted.imageUrl) setFetchedImageUrl(extracted.imageUrl);
-      setUrlExtractHadNoImage(isUrl && !extracted.imageUrl);
+      // Prefer the real og:image tag read straight off the page over Claude's web-search
+      // guess — it's deterministic and doesn't rely on the model inferring a URL, which is
+      // exactly what was making some sites (e.g. BBC Good Food) come back with no image.
+      const bestImageUrl = (isUrl && pageImageUrl) || (isUrl && extracted.imageUrl) || '';
+      if (bestImageUrl) setFetchedImageUrl(bestImageUrl);
+      setUrlExtractHadNoImage(isUrl && !bestImageUrl);
       if (isUrl && extracted.caveat) {
         setErrorMsg(`Heads up: ${extracted.caveat} Worth double-checking the details below against the original page.`);
       }

@@ -106,3 +106,96 @@ exports.claudeProxy = onRequest(
     }
   }
 );
+
+// Recipe pages almost always advertise their hero photo via an <meta property="og:image">
+// (or twitter:image) tag — that's a real, deterministic value the page itself set, not a guess.
+// Asking Claude to find "the main photo URL" via web_search was unreliable (it has to infer a
+// URL from search snippets rather than read the page directly), which is why some sites — like
+// BBC Good Food — often came back with no image even though one clearly existed. This fetches
+// the page server-side (browsers can't do this cross-origin due to CORS) and reads the tag
+// directly. No AI call, so it doesn't touch the Anthropic key or the daily usage cap.
+exports.fetchPageImage = onRequest(
+  { region: 'europe-west2', cors: true, timeoutSeconds: 20, memory: '256MiB' },
+  async (req, res) => {
+    if (req.method !== 'POST') {
+      res.status(405).json({ error: 'Method not allowed' });
+      return;
+    }
+
+    const authHeader = req.headers.authorization || '';
+    const match = authHeader.match(/^Bearer (.+)$/);
+    if (!match) {
+      res.status(401).json({ error: 'Missing bearer token' });
+      return;
+    }
+    try {
+      await admin.auth().verifyIdToken(match[1]);
+    } catch (err) {
+      res.status(401).json({ error: 'Invalid or expired token' });
+      return;
+    }
+
+    const targetUrl = req.body && req.body.url;
+    if (!targetUrl || !/^https?:\/\//i.test(targetUrl)) {
+      res.status(400).json({ error: 'A valid http(s) url is required' });
+      return;
+    }
+
+    try {
+      const pageRes = await fetch(targetUrl, {
+        headers: {
+          // A generic browser-like UA — some sites reject requests with no UA at all.
+          'User-Agent': 'Mozilla/5.0 (compatible; RecipeBoxImageBot/1.0)',
+        },
+        redirect: 'follow',
+      });
+      if (!pageRes.ok || !pageRes.body) {
+        res.status(200).json({ imageUrl: '' }); // fail soft — client falls back to Claude's guess
+        return;
+      }
+
+      // og/twitter tags are almost always in <head>, so stop reading as soon as we see it (or
+      // after a reasonable byte cap) rather than downloading the whole article page.
+      const reader = pageRes.body.getReader();
+      const decoder = new TextDecoder();
+      let html = '';
+      let bytesRead = 0;
+      const maxBytes = 250000;
+      while (bytesRead < maxBytes) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        bytesRead += value.length;
+        html += decoder.decode(value, { stream: true });
+        if (/<\/head>/i.test(html)) break;
+      }
+      reader.cancel().catch(() => {});
+
+      const metaTagRe = /<meta\s+[^>]*>/gi;
+      let ogImage = '';
+      let twitterImage = '';
+      let match2;
+      while ((match2 = metaTagRe.exec(html))) {
+        const tag = match2[0];
+        const propMatch = tag.match(/(?:property|name)\s*=\s*["']([^"']+)["']/i);
+        const contentMatch = tag.match(/content\s*=\s*["']([^"']*)["']/i);
+        if (!propMatch || !contentMatch) continue;
+        const prop = propMatch[1].toLowerCase();
+        if (prop === 'og:image' && !ogImage) ogImage = contentMatch[1];
+        if (prop === 'twitter:image' && !twitterImage) twitterImage = contentMatch[1];
+      }
+
+      let imageUrl = ogImage || twitterImage || '';
+      if (imageUrl) {
+        try {
+          imageUrl = new URL(imageUrl, targetUrl).href; // resolve relative URLs against the page
+        } catch {
+          imageUrl = '';
+        }
+      }
+      res.status(200).json({ imageUrl });
+    } catch (err) {
+      logger.error('fetchPageImage failed', err);
+      res.status(200).json({ imageUrl: '' }); // fail soft — client falls back to Claude's guess
+    }
+  }
+);

@@ -1153,6 +1153,82 @@ function ConfirmDialog({ title, message, confirmLabel, cancelLabel, danger, onCo
   );
 }
 
+// Full-screen viewer for a recipe's photo(s) — tap the hero image or any secondary thumbnail
+// to open it here at full size. Supports left/right arrows, tap-zones, and touch swipe when
+// there's more than one photo.
+function PhotoLightbox({ images, index, onIndexChange, onClose }) {
+  const touchStartX = useRef(null);
+
+  function goTo(delta) {
+    const next = index + delta;
+    if (next >= 0 && next < images.length) onIndexChange(next);
+  }
+
+  function handleTouchStart(e) {
+    touchStartX.current = e.touches[0].clientX;
+  }
+  function handleTouchEnd(e) {
+    if (touchStartX.current == null) return;
+    const dx = e.changedTouches[0].clientX - touchStartX.current;
+    touchStartX.current = null;
+    if (Math.abs(dx) < 40) return;
+    if (dx > 0) goTo(-1);
+    else goTo(1);
+  }
+
+  return (
+    <div
+      onClick={onClose}
+      onTouchStart={handleTouchStart}
+      onTouchEnd={handleTouchEnd}
+      style={{
+        position: 'fixed', inset: 0, background: 'rgba(20,17,13,0.94)', zIndex: 110,
+        display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '20px',
+      }}
+    >
+      <button
+        onClick={onClose}
+        title="Close"
+        style={{ position: 'absolute', top: '18px', right: '18px', background: 'none', border: 'none', color: COLORS.cream, cursor: 'pointer', padding: '6px' }}
+      >
+        <X size={26} />
+      </button>
+
+      {images.length > 1 && (
+        <span style={{ position: 'absolute', top: '22px', left: '20px', color: COLORS.cream, opacity: 0.7, fontSize: '13px', fontFamily: 'Inter, sans-serif' }}>
+          {index + 1} of {images.length}
+        </span>
+      )}
+
+      <img
+        src={images[index]}
+        alt=""
+        onClick={(e) => e.stopPropagation()}
+        style={{ maxWidth: '100%', maxHeight: '78vh', objectFit: 'contain', borderRadius: '4px', boxShadow: '0 8px 30px rgba(0,0,0,0.5)' }}
+      />
+
+      {images.length > 1 && (
+        <div style={{ display: 'flex', gap: '10px', marginTop: '20px' }}>
+          <button
+            onClick={(e) => { e.stopPropagation(); goTo(-1); }}
+            disabled={index === 0}
+            style={{ width: '40px', height: '40px', borderRadius: '50%', border: '1px solid rgba(255,255,255,0.25)', background: 'none', color: COLORS.cream, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: index === 0 ? 'default' : 'pointer', opacity: index === 0 ? 0.3 : 1 }}
+          >
+            <ChevronLeft size={20} />
+          </button>
+          <button
+            onClick={(e) => { e.stopPropagation(); goTo(1); }}
+            disabled={index === images.length - 1}
+            style={{ width: '40px', height: '40px', borderRadius: '50%', border: '1px solid rgba(255,255,255,0.25)', background: 'none', color: COLORS.cream, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: index === images.length - 1 ? 'default' : 'pointer', opacity: index === images.length - 1 ? 0.3 : 1 }}
+          >
+            <ChevronRight size={20} />
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // Auto-derived weekday/weekend indicator — styled as a solid chip to read as automatic,
 // distinct from the outlined, user-entered tags.
 function TimeTag({ category }) {
@@ -1298,7 +1374,7 @@ function RecipeCard({ entry, onClick }) {
   );
 }
 
-function DetailHeroImage({ src, alt, tags, onFindPhoto, finding, onLoadError }) {
+function DetailHeroImage({ src, alt, tags, onFindPhoto, finding, onLoadError, onOpenGallery }) {
   const [failed, setFailed] = useState(false);
   const placeholder = getPlaceholder(tags);
   if (!src || failed) {
@@ -1331,8 +1407,9 @@ function DetailHeroImage({ src, alt, tags, onFindPhoto, finding, onLoadError }) 
     <img
       src={src}
       alt={alt}
+      onClick={onOpenGallery}
       onError={() => { setFailed(true); if (onLoadError) onLoadError(); }}
-      style={{ width: '100%', borderRadius: '3px', marginBottom: '8px', boxShadow: '0 2px 8px rgba(0,0,0,0.15)' }}
+      style={{ width: '100%', borderRadius: '3px', marginBottom: '8px', boxShadow: '0 2px 8px rgba(0,0,0,0.15)', cursor: onOpenGallery ? 'pointer' : 'default' }}
     />
   );
 }
@@ -1590,6 +1667,10 @@ export default function RecipeBox({ onSignOut }) {
   const [sortBy, setSortBy] = useState('newest'); // newest | az | quickest | rating
   const [view, setView] = useState('grid'); // grid | add | detail | cook | index
   const [detail, setDetail] = useState(null);
+  const [galleryIndex, setGalleryIndex] = useState(null); // index into detail.images, or null when closed
+  useEffect(() => {
+    setGalleryIndex(null);
+  }, [detail?.id]);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [findingImage, setFindingImage] = useState(false);
   const [addStage, setAddStage] = useState('capture'); // capture | extracting | review
@@ -3781,11 +3862,26 @@ async function handleFindImage() {
                   <span>{errorMsg}</span>
                 </div>
               )}
-              <DetailHeroImage key={detail.image || 'none'} src={detail.image} alt={detail.title} tags={detail.tags} onFindPhoto={handleFindImage} finding={findingImage} onLoadError={handleImageLoadError} />
+              <DetailHeroImage
+                key={detail.image || 'none'}
+                src={detail.image}
+                alt={detail.title}
+                tags={detail.tags}
+                onFindPhoto={handleFindImage}
+                finding={findingImage}
+                onLoadError={handleImageLoadError}
+                onOpenGallery={detail.image ? () => setGalleryIndex(0) : undefined}
+              />
               {detail.images && detail.images.length > 1 && (
                 <div style={{ display: 'flex', gap: '6px', marginBottom: '14px' }}>
                   {detail.images.slice(1).map((img, i) => (
-                    <img key={i} src={img} alt="" style={{ width: '56px', height: '56px', objectFit: 'cover', borderRadius: '3px' }} />
+                    <img
+                      key={i}
+                      src={img}
+                      alt=""
+                      onClick={() => setGalleryIndex(i + 1)}
+                      style={{ width: '56px', height: '56px', objectFit: 'cover', borderRadius: '3px', cursor: 'pointer' }}
+                    />
                   ))}
                 </div>
               )}
@@ -4167,6 +4263,19 @@ async function handleFindImage() {
           onCancel={() => setConfirmDialog(null)}
         />
       )}
+
+      {galleryIndex !== null && detail && (() => {
+        const galleryImages = detail.images && detail.images.length ? detail.images : (detail.image ? [detail.image] : []);
+        if (galleryImages.length === 0) return null;
+        return (
+          <PhotoLightbox
+            images={galleryImages}
+            index={Math.min(galleryIndex, galleryImages.length - 1)}
+            onIndexChange={setGalleryIndex}
+            onClose={() => setGalleryIndex(null)}
+          />
+        );
+      })()}
     </div>
   );
 }

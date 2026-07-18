@@ -3,7 +3,8 @@ import {
   getAuth, GoogleAuthProvider, signInWithRedirect, getRedirectResult, signOut, onAuthStateChanged,
 } from 'firebase/auth';
 import {
-  getFirestore, doc, getDoc, setDoc, deleteDoc, collection, getDocs,
+  initializeFirestore, persistentLocalCache, persistentSingleTabManager,
+  doc, getDoc, setDoc, deleteDoc, collection, getDocs,
 } from 'firebase/firestore';
 
 // Public client config — safe to ship in the bundle. Real protection comes from
@@ -25,7 +26,14 @@ export const CLOUD_FUNCTION_URL = 'https://europe-west2-recipe-box-80ec6.cloudfu
 
 export const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
-export const db = getFirestore(app);
+// persistentLocalCache backs Firestore with IndexedDB so previously-loaded data (recipes,
+// shopping list, meal plan) stays readable offline, and any writes made offline queue up and
+// sync automatically once connectivity returns. persistentSingleTabManager keeps things simple
+// since this app is normally used in one tab at a time; if it's open in two tabs at once, only
+// the first one gets persistence (Firestore falls back to memory-only in the second).
+export const db = initializeFirestore(app, {
+  localCache: persistentLocalCache({ tabManager: persistentSingleTabManager() }),
+});
 const googleProvider = new GoogleAuthProvider();
 
 export function signInWithGoogle() {

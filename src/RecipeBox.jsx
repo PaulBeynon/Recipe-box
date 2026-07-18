@@ -4,7 +4,7 @@ import {
   AlertCircle, Pencil, Download, Minus, Utensils, ImagePlus, Check,
   Cookie, Fish, Beef, Salad, Soup, Pizza, Croissant, Egg, Wine, BookOpen, LayoutGrid, Star, Clock,
   ShoppingCart, CheckSquare, Square, ListPlus, Sparkles, Play, Pause, RotateCcw, Calendar, Copy, ExternalLink,
-  Upload, Globe, Leaf, LogOut,
+  Upload, Globe, Leaf, LogOut, Mic, MicOff,
 } from 'lucide-react';
 import { CLOUD_FUNCTION_URL, auth } from './firebase-init';
 
@@ -1631,6 +1631,24 @@ export default function RecipeBox({ onSignOut }) {
   const [timerRemaining, setTimerRemaining] = useState(0);
   const [timerRunning, setTimerRunning] = useState(false);
 
+  // cook mode voice control
+  const [voiceMode, setVoiceMode] = useState(false);
+  const [voiceStatus, setVoiceStatus] = useState('');
+  const recognitionRef = useRef(null);
+  const voiceStatusTimeoutRef = useRef(null);
+  // Mirrors the latest cook-mode values in a ref so the SpeechRecognition result handler —
+  // which is only re-created when voice mode toggles on/off, not on every step change — always
+  // acts on current data instead of whatever was current when listening started.
+  const voiceLiveRef = useRef({ steps: [], cookStepIndex: 0, timerRunning: false, timerInfo: null });
+  useEffect(() => {
+    voiceLiveRef.current = {
+      steps: detail?.steps || [],
+      cookStepIndex,
+      timerRunning,
+      timerInfo,
+    };
+  }, [detail, cookStepIndex, timerRunning, timerInfo]);
+
   // shopping list
   const [shoppingList, setShoppingList] = useState([]);
   const [loadingShoppingList, setLoadingShoppingList] = useState(true);
@@ -1713,6 +1731,7 @@ export default function RecipeBox({ onSignOut }) {
           setTimerRunning(false);
           playTimerTone(false);
           if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
+          if (voiceMode) speakText("Time's up");
           return 0;
         }
         return r - 1;
@@ -1730,6 +1749,107 @@ export default function RecipeBox({ onSignOut }) {
       if (navigator.vibrate) navigator.vibrate(150);
     }
   }, [timerRemaining, timerInfo, timerRunning]);
+
+  function speakText(text) {
+    if (!('speechSynthesis' in window) || !text) return;
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.rate = 0.95;
+    window.speechSynthesis.speak(utterance);
+  }
+
+  function handleVoiceCommand(rawTranscript) {
+    const t = (rawTranscript || '').toLowerCase().trim();
+    if (!t) return;
+    setVoiceStatus(`Heard: "${t}"`);
+    clearTimeout(voiceStatusTimeoutRef.current);
+    voiceStatusTimeoutRef.current = setTimeout(() => setVoiceStatus(''), 2500);
+
+    const { steps, cookStepIndex: idx, timerInfo: info } = voiceLiveRef.current;
+
+    if (info && /\b(start|begin|resume)\b/.test(t) && /\b(timer|clock)\b/.test(t)) {
+      setTimerRunning(true);
+    } else if (info && /\b(pause|stop)\b/.test(t) && /\b(timer|clock)\b/.test(t)) {
+      setTimerRunning(false);
+    } else if (info && /\b(reset|restart)\b/.test(t) && /\b(timer|clock)\b/.test(t)) {
+      setTimerRemaining(info.upperSeconds);
+      setTimerRunning(false);
+    } else if (/\b(repeat|again|say that again|what was that)\b/.test(t)) {
+      speakText(steps[idx] || '');
+    } else if (/\b(done|finish|finished|exit cook|stop cooking)\b/.test(t)) {
+      exitCookMode();
+    } else if (/\b(back|previous|go back)\b/.test(t)) {
+      setCookStepIndex((i) => Math.max(0, i - 1));
+    } else if (/\b(next|forward|continue)\b/.test(t)) {
+      setCookStepIndex((i) => Math.min(steps.length - 1, i + 1));
+    }
+  }
+
+  // Reads the current step aloud whenever it changes, so voice mode is genuinely hands-free —
+  // no need to glance at the screen to know what's next.
+  useEffect(() => {
+    if (view !== 'cook' || !voiceMode || !detail) return;
+    speakText(detail.steps[cookStepIndex] || '');
+  }, [cookStepIndex, view, voiceMode, detail]);
+
+  // Starts/stops listening whenever voice mode or the current view changes. iOS Safari's
+  // SpeechRecognition doesn't support true continuous listening (it ends after each utterance,
+  // or after a period of silence), so onend restarts it automatically to simulate continuous
+  // hands-free control until the person turns voice mode off or leaves Cook Mode.
+  useEffect(() => {
+    if (!voiceMode || view !== 'cook') {
+      if (recognitionRef.current) {
+        recognitionRef.current.onend = null;
+        recognitionRef.current.stop();
+        recognitionRef.current = null;
+      }
+      return;
+    }
+    const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognitionCtor) {
+      setVoiceStatus("This browser doesn't support voice control.");
+      setVoiceMode(false);
+      return;
+    }
+    let cancelled = false;
+    function startListening() {
+      if (cancelled) return;
+      const recognition = new SpeechRecognitionCtor();
+      recognition.lang = 'en-GB';
+      recognition.continuous = false;
+      recognition.interimResults = false;
+      recognition.maxAlternatives = 1;
+      recognition.onresult = (e) => {
+        const last = e.results[e.results.length - 1];
+        handleVoiceCommand(last && last[0] && last[0].transcript);
+      };
+      recognition.onerror = (e) => {
+        if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+          setVoiceStatus('Microphone permission denied.');
+          setVoiceMode(false);
+        }
+        // other errors (no-speech, aborted, network) are common and non-fatal — onend restarts
+      };
+      recognition.onend = () => {
+        if (!cancelled) startListening();
+      };
+      recognitionRef.current = recognition;
+      try {
+        recognition.start();
+      } catch {
+        // ignore — usually means one is already running, which is fine
+      }
+    }
+    startListening();
+    return () => {
+      cancelled = true;
+      if (recognitionRef.current) {
+        recognitionRef.current.onend = null;
+        recognitionRef.current.stop();
+        recognitionRef.current = null;
+      }
+    };
+  }, [voiceMode, view]);
 
   const allTags = useMemo(() => {
     const set = new Set();
@@ -2544,6 +2664,7 @@ async function handleFindImage() {
       wakeLockRef.current.release().catch(() => {});
       wakeLockRef.current = null;
     }
+    if ('speechSynthesis' in window) window.speechSynthesis.cancel();
     setTimerRunning(false);
     setView('detail');
   }
@@ -3873,10 +3994,27 @@ async function handleFindImage() {
             <span style={{ color: COLORS.cream, opacity: 0.7, fontSize: '13px' }}>
               Step {cookStepIndex + 1} of {detail.steps.length}
             </span>
-            <button onClick={exitCookMode} style={{ background: 'none', border: 'none', color: COLORS.cream, cursor: 'pointer' }}>
-              <X size={22} />
-            </button>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
+              <button
+                onClick={() => setVoiceMode((v) => !v)}
+                title={voiceMode ? 'Turn off voice control' : 'Turn on voice control'}
+                style={{ background: voiceMode ? COLORS.sage : 'none', border: voiceMode ? 'none' : '1px solid rgba(255,255,255,0.3)', color: COLORS.cream, cursor: 'pointer', width: '34px', height: '34px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+              >
+                {voiceMode ? <Mic size={16} /> : <MicOff size={16} />}
+              </button>
+              <button onClick={exitCookMode} style={{ background: 'none', border: 'none', color: COLORS.cream, cursor: 'pointer' }}>
+                <X size={22} />
+              </button>
+            </div>
           </div>
+
+          {voiceMode && (
+            <div style={{ padding: '0 16px 14px', textAlign: 'center' }}>
+              <p style={{ color: COLORS.cream, opacity: 0.55, fontSize: '11.5px', margin: 0 }}>
+                {voiceStatus || 'Listening — say "next", "back", "repeat", "start timer", or "done"'}
+              </p>
+            </div>
+          )}
 
           {(() => {
             const relevant = relevantIngredientsForStep(detail.steps[cookStepIndex] || '', detail.ingredients || []);

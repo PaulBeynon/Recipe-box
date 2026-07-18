@@ -631,12 +631,18 @@ Return strict JSON only — no markdown fences, no preamble, no commentary — i
   const firstBrace = clean.indexOf('{');
   const lastBrace = clean.lastIndexOf('}');
   if (firstBrace === -1 || lastBrace === -1 || lastBrace <= firstBrace) {
-    throw new Error(`PARSE: No JSON object found in response: ${clean.slice(0, 200)}`);
+    // Claude didn't reply with the requested JSON shape — in practice this almost always
+    // means it searched, came up empty, and explained itself in prose instead of complying
+    // with the empty-imageUrl format. That's a legitimate "nothing found", not a failure,
+    // so treat it the same way rather than surfacing a scary error.
+    console.warn('findImageForRecipe: no JSON in response, treating as not-found:', clean.slice(0, 300));
+    return { imageUrl: '' };
   }
   try {
     return JSON.parse(clean.slice(firstBrace, lastBrace + 1));
   } catch (parseErr) {
-    throw new Error(`PARSE: ${parseErr.message}`);
+    console.warn('findImageForRecipe: JSON parse failed, treating as not-found:', parseErr.message);
+    return { imageUrl: '' };
   }
 }
 
@@ -2378,7 +2384,8 @@ export default function RecipeBox({ onSignOut }) {
       setDetail(updated);
       const newIndex = index.map((r) => (r.id === updated.id ? { ...r, thumbnail: result.imageUrl } : r));
       await persistIndex(newIndex);
-    } catch {
+    } catch (err) {
+      console.error('handleFindImage failed:', err);
       setErrorMsg('Could not search for a photo right now. Please try again.');
     } finally {
       setFindingImage(false);

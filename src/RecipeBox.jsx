@@ -1385,9 +1385,77 @@ function sectionHeader() {
   };
 }
 
-function RecipeFormFields({ form, setForm }) {
+// Reads an image file and re-encodes it as a resized, compressed JPEG data URL — small
+// enough to store directly on the recipe document (no separate storage bucket needed) while
+// keeping typical phone photos well under Firestore's 1MB-per-document limit.
+function readAndCompressImage(file, maxDim = 1000, quality = 0.75) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Could not read that file.'));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error('That file doesn\'t look like an image.'));
+      img.onload = () => {
+        const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(img.width * scale);
+        canvas.height = Math.round(img.height * scale);
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        resolve(canvas.toDataURL('image/jpeg', quality));
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function RecipeFormFields({ form, setForm, image, onImageChange }) {
+  const photoInputRef = React.useRef(null);
+  const [photoError, setPhotoError] = React.useState('');
+
+  async function handlePhotoPick(e) {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setPhotoError('');
+    try {
+      const dataUrl = await readAndCompressImage(file);
+      onImageChange(dataUrl);
+    } catch (err) {
+      setPhotoError(err?.message || 'Could not use that photo.');
+    }
+  }
+
   return (
     <>
+      {onImageChange && (
+        <Field label="Photo">
+          {image ? (
+            <div style={{ position: 'relative', marginBottom: '4px', maxWidth: '200px' }}>
+              <img src={image} alt="" style={{ width: '100%', borderRadius: '4px', display: 'block' }} />
+              <button
+                type="button"
+                onClick={() => onImageChange(null)}
+                title="Remove photo"
+                style={{ position: 'absolute', top: '-6px', right: '-6px', background: COLORS.rust, color: COLORS.cream, border: 'none', borderRadius: '50%', width: '22px', height: '22px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}
+              >
+                <X size={13} />
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => photoInputRef.current?.click()}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', background: 'none', border: `1px solid ${COLORS.cardBorder}`, color: COLORS.inkFaint, borderRadius: '3px', padding: '9px 14px', fontSize: '13px', cursor: 'pointer' }}
+            >
+              <Camera size={14} /> Add a photo from your camera roll
+            </button>
+          )}
+          <input ref={photoInputRef} type="file" accept="image/*" onChange={handlePhotoPick} style={{ display: 'none' }} />
+          {photoError && <p style={{ color: COLORS.rust, fontSize: '12px', margin: '6px 0 0' }}>{photoError}</p>}
+        </Field>
+      )}
       <Field label="Title">
         <input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} style={inputStyle()} />
       </Field>
@@ -2261,6 +2329,7 @@ export default function RecipeBox({ onSignOut }) {
       ingredients: (detail.ingredients || []).join('\n'),
       steps: (detail.steps || []).join('\n'),
       tags: (detail.tags || []).join(', '),
+      image: detail.image || null,
     });
     setEditing(true);
   }
@@ -2278,12 +2347,13 @@ export default function RecipeBox({ onSignOut }) {
       ingredients: ingredientsArr,
       steps: stepsArr,
       tags: tagsArr,
+      image: editForm.image || null,
     };
 
     try {
       await window.storage.set(`recipe-full:${updated.id}`, JSON.stringify(updated), false);
       const newIndex = index.map((r) => r.id === updated.id
-        ? { ...r, title: updated.title, tags: tagsArr, ingredientsPreview: ingredientsArr, time: updated.time }
+        ? { ...r, title: updated.title, tags: tagsArr, ingredientsPreview: ingredientsArr, time: updated.time, thumbnail: updated.image || null }
         : r);
       await persistIndex(newIndex);
       setDetail(updated);
@@ -3561,7 +3631,12 @@ async function handleFindImage() {
             <p style={{ color: COLORS.inkFaint }}>Couldn't load this recipe.</p>
           ) : editing ? (
             <div style={{ background: COLORS.cream, border: `1px solid ${COLORS.cardBorder}`, borderRadius: '4px', padding: '16px' }}>
-              <RecipeFormFields form={editForm} setForm={setEditForm} />
+              <RecipeFormFields
+                form={editForm}
+                setForm={setEditForm}
+                image={editForm.image}
+                onImageChange={(img) => setEditForm({ ...editForm, image: img })}
+              />
               <div style={{ display: 'flex', gap: '8px' }}>
                 <button
                   onClick={saveEdit}

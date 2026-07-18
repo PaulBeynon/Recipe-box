@@ -1,0 +1,38 @@
+// Import the functions you need from the SDKs you need
+import { initializeApp } from "firebase/app";
+import { getAnalytics } from "firebase/analytics";
+// TODO: Add SDKs for Firebase products that you want to use
+// https://firebase.google.com/docs/web/setup#available-libraries
+
+// Your web app's Firebase configuration
+// For Firebase JS SDK v7.20.0 and later, measurementId is optional
+const firebaseConfig = {
+  apiKey: "AIzaSyBPOaD_R5wXxHXELJXVTNpA63UkKq6OJIw",
+  authDomain: "recipe-box-80ec6.firebaseapp.com",
+  projectId: "recipe-box-80ec6",
+  storageBucket: "recipe-box-80ec6.firebasestorage.app",
+  messagingSenderId: "9856364814",
+  appId: "1:9856364814:web:190ed6de77fc7de8c4a75f",
+  measurementId: "G-CZZD7D0JVM"
+};
+
+// Initialize Firebase
+const app = initializeApp(firebaseConfig);
+const analytics = getAnalytics(app);
+
+
+
+
+
+
+
+
+
+
+echo "# Recipe-box" >> README.md
+git init
+git add README.md
+git commit -m "first commit"
+git branch -M main
+git remote add origin https://github.com/PaulBeynon/Recipe-box.git
+git push -u origin main

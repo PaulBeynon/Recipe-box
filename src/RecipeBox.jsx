@@ -359,6 +359,58 @@ function scaleIngredientText(text, factor) {
   return formatted + text.slice(match[0].length);
 }
 
+// ---------- leftovers ("efficiency") helpers ----------
+// Only weight/volume units are convertible enough to safely diff (e.g. "500 g" vs "200 g").
+// Anything else (cloves, cans, a whole item...) is left alone — better to miss a leftover
+// than confidently claim a wrong one.
+const WEIGHT_UNITS_TO_GRAMS = {
+  g: 1, gram: 1, grams: 1, kg: 1000, kilogram: 1000, kilograms: 1000,
+  oz: 28.35, ounce: 28.35, ounces: 28.35, lb: 453.6, lbs: 453.6, pound: 453.6, pounds: 453.6,
+};
+const VOLUME_UNITS_TO_ML = {
+  ml: 1, l: 1000, litre: 1000, litres: 1000, liter: 1000, liters: 1000,
+  tsp: 5, teaspoon: 5, teaspoons: 5, tbsp: 15, tablespoon: 15, tablespoons: 15, cup: 240, cups: 240,
+};
+
+// Parses a leading quantity + unit + name out of an ingredient/shopping-list line, e.g.
+// "500 g mince" -> { qty: 500, name: 'mince', grams: 500 }. Returns null if there's no
+// leading number, or the unit right after it isn't a recognized weight/volume unit.
+function parseQtyUnitName(text) {
+  const t = (text || '').trim();
+  const qtyMatch = t.match(/^(\d+\s+\d+\/\d+|\d+\/\d+|\d+\.\d+|\d+)\s*/);
+  if (!qtyMatch) return null;
+  const qty = toDecimal(qtyMatch[0].trim());
+  if (!isFinite(qty) || qty <= 0) return null;
+  const afterQty = t.slice(qtyMatch[0].length).trim();
+  const unitMatch = afterQty.match(/^([a-zA-Z]+)\.?\s+/);
+  if (!unitMatch) return null;
+  const rawUnit = unitMatch[1].toLowerCase();
+  const name = afterQty.slice(unitMatch[0].length).trim();
+  if (!name) return null;
+  if (rawUnit in WEIGHT_UNITS_TO_GRAMS) return { qty, name, kind: 'weight', base: qty * WEIGHT_UNITS_TO_GRAMS[rawUnit] };
+  if (rawUnit in VOLUME_UNITS_TO_ML) return { qty, name, kind: 'volume', base: qty * VOLUME_UNITS_TO_ML[rawUnit] };
+  return null;
+}
+
+// Compares what a recipe/plan needed against what was actually bought and, if there's a
+// genuine surplus in a unit we can safely diff, returns a display line like "300 g mince"
+// for the leftover. Returns null if nothing's left over or the units aren't comparable.
+function computeLeftoverLine(requiredText, boughtText) {
+  const required = parseQtyUnitName(requiredText);
+  const bought = parseQtyUnitName(boughtText);
+  if (!required || !bought || required.kind !== bought.kind) return null;
+  const leftoverBase = bought.base - required.base;
+  if (leftoverBase <= 0) return null;
+  if (required.kind === 'weight') {
+    return leftoverBase >= 1000
+      ? `${formatQuantity(leftoverBase / 1000)} kg ${required.name}`
+      : `${Math.round(leftoverBase)} g ${required.name}`;
+  }
+  return leftoverBase >= 1000
+    ? `${formatQuantity(leftoverBase / 1000)} l ${required.name}`
+    : `${Math.round(leftoverBase)} ml ${required.name}`;
+}
+
 // ---------- cook-mode step timer ----------
 const TIME_UNIT_RE = 'hours?|hrs?|h\\b|minutes?|mins?|m\\b|seconds?|secs?|s\\b';
 
@@ -1683,6 +1735,10 @@ export default function RecipeBox({ onSignOut }) {
   const [generatingSteps, setGeneratingSteps] = useState(false);
   const [pendingPhotos, setPendingPhotos] = useState([]); // [{full, thumb}]
   const [fetchedImageUrl, setFetchedImageUrl] = useState('');
+  // leftovers ("efficiency") — lets the person record what they actually bought for this
+  // week's plan-derived shopping list, so pack-size leftovers (e.g. a 500g pack for a recipe
+  // that needed 200g) can be turned into a suggested recipe rather than going to waste.
+  const [efficiencyItems, setEfficiencyItems] = useState([]); // [{ id, requiredText, boughtText }]
   const [urlExtractHadNoImage, setUrlExtractHadNoImage] = useState(false);
   const [urlImageBlocked, setUrlImageBlocked] = useState(false);
   const [form, setForm] = useState(null);
@@ -2241,6 +2297,35 @@ export default function RecipeBox({ onSignOut }) {
     setRetryingSmaller(false);
     setGeneratingDish(false);
     setGeneratingFromIngredients(false);
+  }
+
+  // Pulls this week's plan-derived shopping list items in as a starting point for recording
+  // what was actually bought. Every field defaults to "bought exactly what was needed" —
+  // editing is entirely optional, only worth doing for the items where the pack was bigger.
+  function openEfficiencyScreen() {
+    const items = shoppingList
+      .filter((it) => it.recipeId === 'meal-plan')
+      .map((it) => ({ id: it.id, requiredText: it.text, boughtText: it.text }));
+    setEfficiencyItems(items);
+    setErrorMsg('');
+    setView('efficiency');
+  }
+
+  // Diffs required vs. bought for each item, and if anything's genuinely left over, hands the
+  // list straight to the existing "cook from what you've got" flow — no separate generator
+  // needed, this just seeds it the same way typing a list in by hand would.
+  function findLeftoverRecipes() {
+    const lines = efficiencyItems
+      .map((item) => computeLeftoverLine(item.requiredText, item.boughtText))
+      .filter(Boolean);
+    if (lines.length === 0) {
+      setErrorMsg("No leftovers found — edit the amounts above for anything where you bought more than the recipes needed, then try again.");
+      return;
+    }
+    resetAddFlow();
+    setIngredientsText(lines.join('\n'));
+    setAddMode('ingredients');
+    setView('add');
   }
 
   function backToAddMethodMenu() {
@@ -3184,6 +3269,64 @@ async function handleFindImage() {
       )}
 
       {/* SHOPPING LIST VIEW */}
+      {/* EFFICIENCY: RECORD WHAT WAS ACTUALLY BOUGHT, THEN FIND A RECIPE FOR THE LEFTOVERS */}
+      {view === 'efficiency' && (
+        <div style={{ padding: '16px' }}>
+          <button
+            onClick={() => setView('shopping')}
+            style={{ display: 'flex', alignItems: 'center', gap: '4px', color: COLORS.inkFaint, background: 'none', border: 'none', cursor: 'pointer', marginBottom: '14px', fontSize: '14px', padding: 0 }}
+          >
+            <ChevronLeft size={16} /> Back to shopping list
+          </button>
+
+          <h2 style={{ fontFamily: 'Fraunces, serif', fontWeight: 700, fontSize: '22px', color: COLORS.ink, margin: '0 0 4px' }}>
+            Use up leftovers
+          </h2>
+          <p style={{ fontSize: '13px', color: COLORS.inkFaint, margin: '0 0 16px' }}>
+            Pack sizes rarely match exactly what a recipe needs. Only edit the amounts below where you bought more than was needed — everything else can stay as-is.
+          </p>
+
+          {errorMsg && (
+            <div style={{ display: 'flex', gap: '8px', background: '#F6E4DC', color: COLORS.rustDark, padding: '10px 12px', borderRadius: '3px', fontSize: '13px', marginBottom: '14px' }}>
+              <AlertCircle size={16} style={{ flexShrink: 0, marginTop: '1px' }} />
+              <span>{errorMsg}</span>
+            </div>
+          )}
+
+          {efficiencyItems.length === 0 ? (
+            <p style={{ color: COLORS.inkFaint, fontSize: '13px' }}>Nothing from this week's meal plan is on your shopping list yet.</p>
+          ) : (
+            <div style={{ background: COLORS.cream, border: `1px solid ${COLORS.cardBorder}`, borderRadius: '4px', padding: '4px 14px' }}>
+              {efficiencyItems.map((item, i) => (
+                <div key={item.id} style={{ padding: '12px 0', borderBottom: i < efficiencyItems.length - 1 ? `1px solid ${COLORS.paperDark}` : 'none' }}>
+                  <div style={{ fontSize: '12px', color: COLORS.inkFaint, marginBottom: '5px' }}>
+                    Recipes needed <strong style={{ color: COLORS.ink, fontWeight: 600 }}>{item.requiredText}</strong>
+                  </div>
+                  <input
+                    value={item.boughtText}
+                    onChange={(e) => {
+                      const value = e.target.value;
+                      setEfficiencyItems((items) => items.map((it) => (it.id === item.id ? { ...it, boughtText: value } : it)));
+                    }}
+                    placeholder="What did you actually buy?"
+                    style={{ ...inputStyle(), fontSize: '13.5px', padding: '8px 10px' }}
+                  />
+                </div>
+              ))}
+            </div>
+          )}
+
+          {efficiencyItems.length > 0 && (
+            <button
+              onClick={findLeftoverRecipes}
+              style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', background: COLORS.sage, color: COLORS.cream, border: 'none', borderRadius: '3px', padding: '13px', fontWeight: 600, fontSize: '15px', cursor: 'pointer', marginTop: '18px' }}
+            >
+              <Sparkles size={16} /> Find a recipe for the leftovers
+            </button>
+          )}
+        </div>
+      )}
+
       {view === 'shopping' && (
         <div style={{ padding: '16px' }}>
           <button
@@ -3212,6 +3355,15 @@ async function handleFindImage() {
               <AlertCircle size={16} style={{ flexShrink: 0, marginTop: '1px' }} />
               <span>{errorMsg}</span>
             </div>
+          )}
+
+          {shoppingList.some((it) => it.recipeId === 'meal-plan') && (
+            <button
+              onClick={openEfficiencyScreen}
+              style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', width: '100%', background: 'none', color: COLORS.rustDark, border: `1px solid ${COLORS.mustard}`, borderRadius: '3px', padding: '10px', fontSize: '13px', fontWeight: 600, cursor: 'pointer', marginBottom: '16px' }}
+            >
+              <Sparkles size={14} /> Efficiency: find a recipe for pack-size leftovers
+            </button>
           )}
 
           <div style={{ display: 'flex', gap: '8px', marginBottom: '16px' }}>

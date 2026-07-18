@@ -2366,7 +2366,31 @@ export default function RecipeBox({ onSignOut }) {
     }
   }
 
-  async function handleFindImage() {
+// Confirms a URL actually loads as an image in this browser before we commit to it — many
+// recipe blogs and CDNs return a 200 for the page but block hotlinking to the image itself
+// (or the URL Claude guessed turns out not to exist), so we'd rather find that out now than
+// after already telling the user we found one.
+function urlLoadsAsImage(url, timeoutMs = 6000) {
+  return new Promise((resolve) => {
+    if (!url) {
+      resolve(false);
+      return;
+    }
+    const img = new Image();
+    let settled = false;
+    const finish = (ok) => {
+      if (settled) return;
+      settled = true;
+      resolve(ok);
+    };
+    img.onload = () => finish(true);
+    img.onerror = () => finish(false);
+    img.src = url;
+    setTimeout(() => finish(false), timeoutMs);
+  });
+}
+
+async function handleFindImage() {
     if (!detail || findingImage) return;
     setFindingImage(true);
     setErrorMsg('');
@@ -2374,6 +2398,11 @@ export default function RecipeBox({ onSignOut }) {
       const result = await findRecipePhoto(detail.title, detail.tags || []);
       if (!result || !result.imageUrl) {
         setErrorMsg("Couldn't find a suitable photo for this one — you can always add your own from the edit screen.");
+        return;
+      }
+      const loads = await urlLoadsAsImage(result.imageUrl);
+      if (!loads) {
+        setErrorMsg("Found a photo, but the source wouldn't let it load here — you can always add your own from the edit screen.");
         return;
       }
       // Stored as a live external URL, the same as a hero image found during URL

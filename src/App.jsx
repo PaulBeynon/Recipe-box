@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { ChefHat, Loader2 } from 'lucide-react';
-import { auth, watchAuthState, signInWithGoogle, signOutUser, installFirestoreStorageShim } from './firebase-init';
+import { auth, watchAuthState, signInWithGoogle, signOutUser, installFirestoreStorageShim, checkRedirectResult } from './firebase-init';
 import RecipeBox from './RecipeBox';
 
 const COLORS = {
@@ -52,6 +52,12 @@ export default function App() {
   const [signInError, setSignInError] = useState('');
 
   useEffect(() => {
+    // Catches the result (or error) when the browser returns from Google's
+    // sign-in redirect. Runs once on load; harmless no-op if there was no
+    // pending redirect.
+    checkRedirectResult().catch((err) => {
+      setSignInError(err?.message || 'Sign-in failed. Please try again.');
+    });
     const unsubscribe = watchAuthState((u) => {
       setUser(u);
       setAuthChecked(true);
@@ -60,16 +66,16 @@ export default function App() {
     return unsubscribe;
   }, []);
 
-  async function handleSignIn() {
+  function handleSignIn() {
     setSigningIn(true);
     setSignInError('');
-    try {
-      await signInWithGoogle();
-    } catch (err) {
+    // signInWithRedirect navigates the whole page away to Google and back —
+    // there's no promise to await here, the result is picked up by
+    // checkRedirectResult() above once the page reloads.
+    signInWithGoogle().catch((err) => {
       setSignInError(err?.message || 'Could not sign in. Please try again.');
-    } finally {
       setSigningIn(false);
-    }
+    });
   }
 
   async function handleSignOut() {

@@ -539,6 +539,40 @@ Return strict JSON only — no markdown fences, no preamble, no commentary — i
   }
 }
 
+// Looks up a real, verified photo on Wikimedia Commons for a dish name. Unlike asking
+// Claude to guess a URL from web search snippets, this confirms the file actually exists
+// (and is a real image, not an SVG logo/icon) before we ever try to use it. Free, no key,
+// CORS-enabled via origin=*. Returns a direct image URL or null if nothing suitable found.
+async function findImageOnWikimedia(title, tags) {
+  try {
+    const query = [title, ...(tags || []).slice(0, 2), 'food'].filter(Boolean).join(' ');
+    const url = `https://commons.wikimedia.org/w/api.php?action=query&generator=search&gsrsearch=${encodeURIComponent(query)}&gsrnamespace=6&gsrlimit=8&prop=imageinfo&iiprop=url|mime&iiurlwidth=800&format=json&origin=*`;
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const data = await res.json();
+    const pages = data && data.query && data.query.pages;
+    if (!pages) return null;
+    const candidate = Object.values(pages)
+      .map((p) => p.imageinfo && p.imageinfo[0])
+      .find((info) => info && /^image\/(jpeg|png|webp)$/.test(info.mime));
+    if (!candidate) return null;
+    return candidate.thumburl || candidate.url;
+  } catch {
+    return null;
+  }
+}
+
+// Finds a real photo for a recipe that doesn't have one yet. Tries Wikimedia Commons first
+// (fast, free, and verified to actually exist), then falls back to asking Claude to search
+// the wider web if Commons doesn't have anything suitable for this dish.
+async function findRecipePhoto(title, tags) {
+  const wikimediaUrl = await findImageOnWikimedia(title, tags);
+  if (wikimediaUrl) {
+    return { imageUrl: wikimediaUrl };
+  }
+  return findImageForRecipe(title, tags);
+}
+
 // Finds a real photo for a recipe that doesn't have one yet, via Claude's web_search tool.
 // Returns a direct image URL to be used as a live external <img src> (same approach as the
 // hero image already fetched during URL-based extraction) — nothing is downloaded or stored.
@@ -1243,12 +1277,13 @@ function DetailHeroImage({ src, alt, tags, onFindPhoto, finding, onLoadError }) 
         <placeholder.Icon size={44} />
         {onFindPhoto && (
           <button
-            onClick={onFindPhoto}
-            disabled={finding}
+            onClick={finding ? undefined : onFindPhoto}
+            aria-disabled={finding}
             style={{
               display: 'flex', alignItems: 'center', gap: '6px', background: 'none',
               border: `1px solid ${placeholder.fg}`, color: placeholder.fg, borderRadius: '3px',
               padding: '6px 12px', fontSize: '12px', fontWeight: 600, cursor: finding ? 'default' : 'pointer', opacity: finding ? 0.75 : 1,
+              pointerEvents: finding ? 'none' : 'auto',
             }}
           >
             {finding ? <Loader2 size={13} className="animate-spin" /> : <ImagePlus size={13} />}
@@ -1837,6 +1872,7 @@ export default function RecipeBox({ onSignOut }) {
   }
 
   async function autoFillEmptyDays() {
+    if (autoFilling) return;
     const emptyCount = mealPlan.filter((d) => !d.recipeId).length;
     if (emptyCount === 0 || index.length === 0) return;
     setAutoFilling(true);
@@ -1863,6 +1899,7 @@ export default function RecipeBox({ onSignOut }) {
   }
 
   async function generatePlanShoppingList() {
+    if (generatingPlanList) return;
     const assignedDays = mealPlan.filter((d) => d.recipeId);
     if (assignedDays.length === 0) return;
     setGeneratingPlanList(true);
@@ -2300,7 +2337,7 @@ export default function RecipeBox({ onSignOut }) {
     setFindingImage(true);
     setErrorMsg('');
     try {
-      const result = await findImageForRecipe(detail.title, detail.tags || []);
+      const result = await findRecipePhoto(detail.title, detail.tags || []);
       if (!result || !result.imageUrl) {
         setErrorMsg("Couldn't find a suitable photo for this one — you can always add your own from the edit screen.");
         return;
@@ -2378,6 +2415,7 @@ export default function RecipeBox({ onSignOut }) {
   }
 
   async function exportLibrary() {
+    if (exporting) return;
     setExporting(true);
     try {
       const results = [];
@@ -2562,18 +2600,18 @@ export default function RecipeBox({ onSignOut }) {
                   <BookOpen size={21} />
                 </button>
                 <button
-                  onClick={exportLibrary}
-                  disabled={exporting}
+                  onClick={exporting ? undefined : exportLibrary}
+                  aria-disabled={exporting}
                   title="Download a backup of your library"
-                  style={{ background: 'none', border: 'none', color: COLORS.cream, opacity: 0.75, cursor: 'pointer', padding: '4px' }}
+                  style={{ background: 'none', border: 'none', color: COLORS.cream, opacity: 0.75, cursor: exporting ? 'default' : 'pointer', padding: '4px', pointerEvents: exporting ? 'none' : 'auto' }}
                 >
                   {exporting ? <Loader2 size={21} className="animate-spin" /> : <Download size={21} />}
                 </button>
                 <button
-                  onClick={() => importInputRef.current?.click()}
-                  disabled={importing}
+                  onClick={importing ? undefined : () => importInputRef.current?.click()}
+                  aria-disabled={importing}
                   title="Import a backup file"
-                  style={{ background: 'none', border: 'none', color: COLORS.cream, opacity: 0.75, cursor: 'pointer', padding: '4px' }}
+                  style={{ background: 'none', border: 'none', color: COLORS.cream, opacity: 0.75, cursor: importing ? 'default' : 'pointer', padding: '4px', pointerEvents: importing ? 'none' : 'auto' }}
                 >
                   {importing ? <Loader2 size={21} className="animate-spin" /> : <Upload size={21} />}
                 </button>
@@ -3073,12 +3111,13 @@ export default function RecipeBox({ onSignOut }) {
 
               {mealPlan.some((d) => !d.recipeId) && index.length > 0 && (
                 <button
-                  onClick={autoFillEmptyDays}
-                  disabled={autoFilling}
+                  onClick={autoFilling ? undefined : autoFillEmptyDays}
+                  aria-disabled={autoFilling}
                   style={{
                     width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
                     background: 'none', color: COLORS.sage, border: `1px solid ${COLORS.sage}`, borderRadius: '3px',
                     padding: '12px', fontWeight: 600, fontSize: '14px', cursor: autoFilling ? 'default' : 'pointer', marginBottom: '10px',
+                    pointerEvents: autoFilling ? 'none' : 'auto',
                   }}
                 >
                   {autoFilling ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
@@ -3087,13 +3126,15 @@ export default function RecipeBox({ onSignOut }) {
               )}
 
               <button
-                onClick={generatePlanShoppingList}
-                disabled={generatingPlanList || mealPlan.every((d) => !d.recipeId)}
+                onClick={generatingPlanList || mealPlan.every((d) => !d.recipeId) ? undefined : generatePlanShoppingList}
+                disabled={mealPlan.every((d) => !d.recipeId)}
+                aria-disabled={generatingPlanList}
                 style={{
                   width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
                   background: mealPlan.some((d) => d.recipeId) ? COLORS.rust : COLORS.cardBorder, color: COLORS.cream,
                   border: 'none', borderRadius: '3px', padding: '13px', fontWeight: 600, fontSize: '15px',
                   cursor: mealPlan.some((d) => d.recipeId) && !generatingPlanList ? 'pointer' : 'default',
+                  pointerEvents: generatingPlanList ? 'none' : 'auto',
                 }}
               >
                 {generatingPlanList ? <Loader2 size={17} className="animate-spin" /> : <ShoppingCart size={17} />}
@@ -3563,12 +3604,13 @@ export default function RecipeBox({ onSignOut }) {
                     This recipe doesn't have instructions yet.
                   </p>
                   <button
-                    onClick={handleGenerateSteps}
-                    disabled={generatingSteps}
+                    onClick={generatingSteps ? undefined : handleGenerateSteps}
+                    aria-disabled={generatingSteps}
                     style={{
                       display: 'inline-flex', alignItems: 'center', gap: '6px', background: COLORS.sage, color: COLORS.cream,
                       border: 'none', borderRadius: '3px', padding: '9px 16px', fontSize: '13px', fontWeight: 600,
                       cursor: generatingSteps ? 'default' : 'pointer', opacity: generatingSteps ? 0.75 : 1,
+                      pointerEvents: generatingSteps ? 'none' : 'auto',
                     }}
                   >
                     {generatingSteps ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}

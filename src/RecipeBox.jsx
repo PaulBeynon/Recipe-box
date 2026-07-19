@@ -574,9 +574,25 @@ function significantWords(text) {
     .filter((w) => w.length >= 3 && !TITLE_STOPWORDS.has(w));
 }
 async function findImageOnWikimedia(title, tags) {
+  // Pass 1: title alone. For well-known dishes, Commons files are often titled almost exactly
+  // like this (e.g. a real file called "Grilled cheese sandwich.jpg" exists) — adding the
+  // app's own recipe tags (like "quick" or "vegetarian") into the search only dilutes this
+  // exact-match case with irrelevant keywords.
+  const precise = await searchWikimediaCommons(title, `${title} food`);
+  if (precise) return precise;
+
+  // Pass 2: broader query with up to 2 tags, for less common or ambiguous dish names where
+  // extra context might actually help Commons' search surface something relevant.
+  if (tags && tags.length) {
+    const broad = await searchWikimediaCommons(title, `${title} ${tags.slice(0, 2).join(' ')} food`);
+    if (broad) return broad;
+  }
+  return null;
+}
+
+async function searchWikimediaCommons(title, searchQuery) {
   try {
-    const query = [title, ...(tags || []).slice(0, 2), 'food'].filter(Boolean).join(' ');
-    const url = `https://commons.wikimedia.org/w/api.php?action=query&generator=search&gsrsearch=${encodeURIComponent(query)}&gsrnamespace=6&gsrlimit=10&prop=imageinfo&iiprop=url|mime&iiurlwidth=800&format=json&origin=*`;
+    const url = `https://commons.wikimedia.org/w/api.php?action=query&generator=search&gsrsearch=${encodeURIComponent(searchQuery)}&gsrnamespace=6&gsrlimit=15&prop=imageinfo&iiprop=url|mime&iiurlwidth=800&format=json&origin=*`;
     const res = await fetch(url);
     if (!res.ok) return null;
     const data = await res.json();

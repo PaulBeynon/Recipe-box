@@ -610,14 +610,60 @@ async function findImageOnWikimedia(title, tags) {
 }
 
 // Finds a real photo for a recipe that doesn't have one yet. Tries Wikimedia Commons first
-// (fast, free, and verified to actually exist), then falls back to asking Claude to search
-// the wider web if Commons doesn't have anything suitable for this dish.
+// (fast, free, and verified to actually exist). If nothing matches well there, asks Claude to
+// find a genuine recipe page for the dish (a much more reliable search task than asking it to
+// guess a raw image URL directly), then reads that page's real og:image tag via the same
+// deterministic fetchPageImage lookup used for URL import — rather than asking Claude to guess
+// an image URL from search snippets, which is what made this feature unreliable before.
 async function findRecipePhoto(title, tags) {
   const wikimediaUrl = await findImageOnWikimedia(title, tags);
   if (wikimediaUrl) {
     return { imageUrl: wikimediaUrl };
   }
+
+  const pageUrl = await findRecipePageUrl(title, tags);
+  if (pageUrl) {
+    const pageImageUrl = await fetchPageImage(pageUrl);
+    if (pageImageUrl) return { imageUrl: pageImageUrl };
+  }
+
+  // Last resort: ask Claude to guess a direct image URL, same as before. Worse odds than the
+  // page-then-og:image approach above, but better than nothing for the rare case where Claude
+  // can identify an image without a clean page URL to point at.
   return findImageForRecipe(title, tags);
+}
+
+// Asks Claude to find a genuine recipe/food page for this dish — a normal web search task,
+// not asking it to infer a raw image URL. Returns a page URL, or '' if nothing suitable found.
+async function findRecipePageUrl(title, tags) {
+  const prompt = `Find a real, currently-live web page with a genuine recipe or article about the dish "${title}"${tags && tags.length ? ` (cuisine/style hints: ${tags.join(', ')})` : ''}. Search the web for this. Prefer major recipe sites (BBC Good Food, Wikipedia, Wikimedia Commons, well-known food blogs) over obscure or low-quality sites.
+
+Return strict JSON only — no markdown fences, no preamble, no commentary — in exactly this shape:
+{
+  "pageUrl": string  // a real, absolute URL to a page about this dish, or "" if you couldn't find one
+}`;
+
+  const data = await postToClaudeWithRetry({
+    model: 'claude-sonnet-4-6',
+    max_tokens: 1024,
+    messages: [{ role: 'user', content: prompt }],
+    tools: [{ type: 'web_search_20250305', name: 'web_search' }],
+  });
+
+  const text = (data.content || [])
+    .map((b) => (b.type === 'text' ? b.text : ''))
+    .filter(Boolean)
+    .join('\n');
+  const clean = text.replace(/```json|```/g, '').trim();
+  const firstBrace = clean.indexOf('{');
+  const lastBrace = clean.lastIndexOf('}');
+  if (firstBrace === -1 || lastBrace === -1 || lastBrace <= firstBrace) return '';
+  try {
+    const parsed = JSON.parse(clean.slice(firstBrace, lastBrace + 1));
+    return (parsed && parsed.pageUrl) || '';
+  } catch {
+    return '';
+  }
 }
 
 // Finds a real photo for a recipe that doesn't have one yet, via Claude's web_search tool.

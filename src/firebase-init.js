@@ -1,6 +1,7 @@
 import { initializeApp } from 'firebase/app';
 import {
   getAuth, GoogleAuthProvider, signInWithRedirect, signInWithPopup, getRedirectResult, signOut, onAuthStateChanged,
+  createUserWithEmailAndPassword, signInWithEmailAndPassword, sendPasswordResetEmail,
 } from 'firebase/auth';
 import {
   initializeFirestore, getFirestore, persistentLocalCache, persistentMultipleTabManager,
@@ -72,6 +73,21 @@ export function signInWithGooglePopup() {
 
 export function checkRedirectResult() {
   return getRedirectResult(auth);
+}
+
+// Email/password — a second sign-in option for anyone without (or not wanting to use) a
+// Google account. Needs the "Email/Password" provider turned on in the Firebase Console under
+// Authentication → Sign-in method, or these will fail with auth/operation-not-allowed.
+export function createAccountWithEmail(email, password) {
+  return createUserWithEmailAndPassword(auth, email, password);
+}
+
+export function signInWithEmail(email, password) {
+  return signInWithEmailAndPassword(auth, email, password);
+}
+
+export function resetPasswordForEmail(email) {
+  return sendPasswordResetEmail(auth, email);
 }
 
 export function signOutUser() {

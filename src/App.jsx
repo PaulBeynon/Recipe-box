@@ -3,6 +3,7 @@ import { ChefHat, Loader2 } from 'lucide-react';
 import {
   auth, watchAuthState, signInWithGoogle, signInWithGooglePopup, signOutUser,
   installFirestoreStorageShim, checkRedirectResult, REDIRECT_PENDING_KEY,
+  createAccountWithEmail, signInWithEmail, resetPasswordForEmail,
 } from './firebase-init';
 import RecipeBox from './RecipeBox';
 
@@ -15,7 +16,33 @@ const COLORS = {
   cardBorder: '#D8CBB0',
 };
 
-function SignInScreen({ onSignIn, signingIn, error }) {
+const EMAIL_ERROR_MESSAGES = {
+  'auth/invalid-email': 'That doesn\'t look like a valid email address.',
+  'auth/user-not-found': 'No account found with that email — try "Create account" instead.',
+  'auth/wrong-password': 'That password doesn\'t match this email.',
+  'auth/invalid-credential': 'Email or password doesn\'t match. Check both and try again.',
+  'auth/email-already-in-use': 'An account already exists with that email — try signing in instead.',
+  'auth/weak-password': 'Please choose a password with at least 6 characters.',
+  'auth/too-many-requests': 'Too many attempts — please wait a bit and try again.',
+  'auth/operation-not-allowed': 'Email sign-in isn\'t turned on for this app yet.',
+};
+
+function friendlyAuthError(err) {
+  return EMAIL_ERROR_MESSAGES[err?.code] || err?.message || 'Something went wrong. Please try again.';
+}
+
+function inputStyle() {
+  return {
+    width: '100%', padding: '11px 12px', fontSize: '14px', border: '1px solid #D8CBB0',
+    borderRadius: '4px', fontFamily: 'Inter, sans-serif', boxSizing: 'border-box',
+  };
+}
+
+function SignInScreen({
+  onSignIn, signingIn, error,
+  emailMode, setEmailMode, email, setEmail, password, setPassword,
+  onEmailSignIn, onEmailSignUp, onForgotPassword, emailBusy, emailNotice,
+}) {
   return (
     <div style={{
       minHeight: '100vh', background: COLORS.paper, display: 'flex', flexDirection: 'column',
@@ -31,16 +58,86 @@ function SignInScreen({ onSignIn, signingIn, error }) {
       </p>
       <button
         onClick={onSignIn}
-        disabled={signingIn}
+        disabled={signingIn || emailBusy}
         style={{
           display: 'flex', alignItems: 'center', gap: '10px', background: COLORS.rust, color: COLORS.cream,
           border: 'none', borderRadius: '4px', padding: '13px 26px', fontSize: '15px', fontWeight: 600,
-          cursor: signingIn ? 'default' : 'pointer', opacity: signingIn ? 0.7 : 1,
+          cursor: signingIn ? 'default' : 'pointer', opacity: signingIn ? 0.7 : 1, width: '100%', maxWidth: '300px',
+          justifyContent: 'center',
         }}
       >
         {signingIn ? <Loader2 size={18} className="animate-spin" /> : null}
         {signingIn ? 'Signing in…' : 'Sign in with Google'}
       </button>
+
+      <div style={{ display: 'flex', alignItems: 'center', width: '100%', maxWidth: '300px', margin: '20px 0', gap: '10px' }}>
+        <div style={{ flex: 1, height: '1px', background: COLORS.cardBorder }} />
+        <span style={{ color: COLORS.inkFaint, fontSize: '12px' }}>or</span>
+        <div style={{ flex: 1, height: '1px', background: COLORS.cardBorder }} />
+      </div>
+
+      <div style={{ width: '100%', maxWidth: '300px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+        <input
+          type="email"
+          inputMode="email"
+          autoComplete="email"
+          placeholder="Email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          style={inputStyle()}
+        />
+        <input
+          type="password"
+          autoComplete={emailMode === 'signup' ? 'new-password' : 'current-password'}
+          placeholder="Password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          style={inputStyle()}
+        />
+        {emailMode === 'signin' ? (
+          <button
+            onClick={onEmailSignIn}
+            disabled={emailBusy || signingIn}
+            style={{
+              background: 'none', border: `1px solid ${COLORS.rust}`, color: COLORS.rust, borderRadius: '4px',
+              padding: '11px', fontSize: '14px', fontWeight: 600, cursor: emailBusy ? 'default' : 'pointer',
+            }}
+          >
+            {emailBusy ? 'Signing in…' : 'Sign in with email'}
+          </button>
+        ) : (
+          <button
+            onClick={onEmailSignUp}
+            disabled={emailBusy || signingIn}
+            style={{
+              background: 'none', border: `1px solid ${COLORS.rust}`, color: COLORS.rust, borderRadius: '4px',
+              padding: '11px', fontSize: '14px', fontWeight: 600, cursor: emailBusy ? 'default' : 'pointer',
+            }}
+          >
+            {emailBusy ? 'Creating account…' : 'Create account'}
+          </button>
+        )}
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', color: COLORS.inkFaint, marginTop: '2px' }}>
+          <button
+            onClick={() => setEmailMode(emailMode === 'signin' ? 'signup' : 'signin')}
+            style={{ background: 'none', border: 'none', color: COLORS.inkFaint, textDecoration: 'underline', cursor: 'pointer', padding: 0 }}
+          >
+            {emailMode === 'signin' ? "New here? Create an account" : "Already have an account? Sign in"}
+          </button>
+          {emailMode === 'signin' && (
+            <button
+              onClick={onForgotPassword}
+              style={{ background: 'none', border: 'none', color: COLORS.inkFaint, textDecoration: 'underline', cursor: 'pointer', padding: 0 }}
+            >
+              Forgot password?
+            </button>
+          )}
+        </div>
+      </div>
+
+      {emailNotice && (
+        <p style={{ color: COLORS.inkFaint, fontSize: '13px', marginTop: '16px', maxWidth: '300px' }}>{emailNotice}</p>
+      )}
       {error && (
         <p style={{ color: COLORS.rust, fontSize: '13px', marginTop: '16px', maxWidth: '300px' }}>{error}</p>
       )}
@@ -53,6 +150,11 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [signingIn, setSigningIn] = useState(false);
   const [signInError, setSignInError] = useState('');
+  const [emailMode, setEmailMode] = useState('signin');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [emailBusy, setEmailBusy] = useState(false);
+  const [emailNotice, setEmailNotice] = useState('');
 
   useEffect(() => {
     // Catches the result (or error) when the browser returns from Google's sign-in redirect —
@@ -113,6 +215,50 @@ export default function App() {
       });
   }
 
+  async function handleEmailSignIn() {
+    setEmailBusy(true);
+    setSignInError('');
+    setEmailNotice('');
+    try {
+      await signInWithEmail(email.trim(), password);
+    } catch (err) {
+      setSignInError(friendlyAuthError(err));
+    } finally {
+      setEmailBusy(false);
+    }
+  }
+
+  async function handleEmailSignUp() {
+    setEmailBusy(true);
+    setSignInError('');
+    setEmailNotice('');
+    try {
+      await createAccountWithEmail(email.trim(), password);
+    } catch (err) {
+      setSignInError(friendlyAuthError(err));
+    } finally {
+      setEmailBusy(false);
+    }
+  }
+
+  async function handleForgotPassword() {
+    if (!email.trim()) {
+      setSignInError('Enter your email above first, then tap "Forgot password?" again.');
+      return;
+    }
+    setEmailBusy(true);
+    setSignInError('');
+    setEmailNotice('');
+    try {
+      await resetPasswordForEmail(email.trim());
+      setEmailNotice('Password reset email sent — check your inbox.');
+    } catch (err) {
+      setSignInError(friendlyAuthError(err));
+    } finally {
+      setEmailBusy(false);
+    }
+  }
+
   async function handleSignOut() {
     await signOutUser();
   }
@@ -126,7 +272,24 @@ export default function App() {
   }
 
   if (!user) {
-    return <SignInScreen onSignIn={handleSignIn} signingIn={signingIn} error={signInError} />;
+    return (
+      <SignInScreen
+        onSignIn={handleSignIn}
+        signingIn={signingIn}
+        error={signInError}
+        emailMode={emailMode}
+        setEmailMode={setEmailMode}
+        email={email}
+        setEmail={setEmail}
+        password={password}
+        setPassword={setPassword}
+        onEmailSignIn={handleEmailSignIn}
+        onEmailSignUp={handleEmailSignUp}
+        onForgotPassword={handleForgotPassword}
+        emailBusy={emailBusy}
+        emailNotice={emailNotice}
+      />
+    );
   }
 
   return <RecipeBox onSignOut={handleSignOut} key={user.uid} />;

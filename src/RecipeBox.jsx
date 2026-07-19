@@ -630,12 +630,11 @@ async function findRecipePhoto(title, tags) {
     if (pageImageUrl) return { imageUrl: pageImageUrl };
   }
 
-  // Last resort: ask Claude to guess a direct image URL, same as before. Worse odds than the
-  // page-then-og:image approach above, but better than nothing for the rare case where Claude
-  // can identify an image without a clean page URL to point at.
-  const fallback = await findImageForRecipe(title, tags);
-  console.log('findRecipePhoto: last-resort guessed imageUrl:', fallback.imageUrl || '(none)');
-  return fallback;
+  // No further fallback here on purpose — asking Claude to guess a raw image URL directly
+  // (rather than reading a real page's real og:image, as above) was tested and found to
+  // hallucinate plausible-looking but nonexistent URLs, which is worse than honestly
+  // reporting no photo was found.
+  return { imageUrl: '' };
 }
 
 // Asks Claude to find a genuine recipe/food page for this dish — a normal web search task,
@@ -668,51 +667,6 @@ Return strict JSON only — no markdown fences, no preamble, no commentary — i
     return (parsed && parsed.pageUrl) || '';
   } catch {
     return '';
-  }
-}
-
-// Finds a real photo for a recipe that doesn't have one yet, via Claude's web_search tool.
-// Returns a direct image URL to be used as a live external <img src> (same approach as the
-// hero image already fetched during URL-based extraction) — nothing is downloaded or stored.
-async function findImageForRecipe(title, tags) {
-  const prompt = `Find one real, direct photo URL of the dish "${title}"${tags && tags.length ? ` (cuisine/style hints: ${tags.join(', ')})` : ''}. Search the web for a genuine food photo of this dish — not a logo, icon, ad, or unrelated image.
-
-Strongly prefer Wikimedia Commons (upload.wikimedia.org) if a suitable photo of this dish exists there — those links are freely embeddable and reliably load elsewhere. Recipe blogs and food-site CDNs often block other sites from linking directly to their images, so only fall back to one of those if nothing suitable exists on Wikimedia Commons, and prefer sites that host their own images directly rather than behind a CDN with access controls.
-
-The URL must point directly at an image file (ending in .jpg, .jpeg, .png, or .webp, or otherwise clearly an image resource), not a webpage that merely contains one.
-
-Return strict JSON only — no markdown fences, no preamble, no commentary — in exactly this shape:
-{
-  "imageUrl": string  // a direct, absolute URL to an actual image file, or "" if you couldn't find a suitable one
-}`;
-
-  const data = await postToClaudeWithRetry({
-    model: 'claude-sonnet-4-6',
-    max_tokens: 1024,
-    messages: [{ role: 'user', content: prompt }],
-    tools: [{ type: 'web_search_20250305', name: 'web_search' }],
-  });
-
-  const text = (data.content || [])
-    .map((b) => (b.type === 'text' ? b.text : ''))
-    .filter(Boolean)
-    .join('\n');
-  const clean = text.replace(/```json|```/g, '').trim();
-  const firstBrace = clean.indexOf('{');
-  const lastBrace = clean.lastIndexOf('}');
-  if (firstBrace === -1 || lastBrace === -1 || lastBrace <= firstBrace) {
-    // Claude didn't reply with the requested JSON shape — in practice this almost always
-    // means it searched, came up empty, and explained itself in prose instead of complying
-    // with the empty-imageUrl format. That's a legitimate "nothing found", not a failure,
-    // so treat it the same way rather than surfacing a scary error.
-    console.warn('findImageForRecipe: no JSON in response, treating as not-found:', clean.slice(0, 300));
-    return { imageUrl: '' };
-  }
-  try {
-    return JSON.parse(clean.slice(firstBrace, lastBrace + 1));
-  } catch (parseErr) {
-    console.warn('findImageForRecipe: JSON parse failed, treating as not-found:', parseErr.message);
-    return { imageUrl: '' };
   }
 }
 

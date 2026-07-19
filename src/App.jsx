@@ -15,7 +15,7 @@ const COLORS = {
   cardBorder: '#D8CBB0',
 };
 
-function SignInScreen({ onSignIn, onSignInPopup, signingIn, error, showPopupFallback }) {
+function SignInScreen({ onSignIn, signingIn, error }) {
   return (
     <div style={{
       minHeight: '100vh', background: COLORS.paper, display: 'flex', flexDirection: 'column',
@@ -44,18 +44,6 @@ function SignInScreen({ onSignIn, onSignInPopup, signingIn, error, showPopupFall
       {error && (
         <p style={{ color: COLORS.rust, fontSize: '13px', marginTop: '16px', maxWidth: '300px' }}>{error}</p>
       )}
-      {showPopupFallback && (
-        <button
-          onClick={onSignInPopup}
-          disabled={signingIn}
-          style={{
-            background: 'none', border: 'none', color: COLORS.inkFaint, fontSize: '13px',
-            textDecoration: 'underline', cursor: signingIn ? 'default' : 'pointer', marginTop: '14px', padding: 0,
-          }}
-        >
-          Try a different sign-in method
-        </button>
-      )}
     </div>
   );
 }
@@ -65,23 +53,21 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [signingIn, setSigningIn] = useState(false);
   const [signInError, setSignInError] = useState('');
-  const [showPopupFallback, setShowPopupFallback] = useState(false);
 
   useEffect(() => {
-    // Catches the result (or error) when the browser returns from Google's sign-in redirect.
-    // Runs once on load; harmless no-op if there was no pending redirect.
+    // Catches the result (or error) when the browser returns from Google's sign-in redirect —
+    // relevant now only when handleSignIn below had to fall back to redirect because popup
+    // itself didn't work. Harmless no-op if there was no pending redirect.
     const wasRedirectPending = sessionStorage.getItem(REDIRECT_PENDING_KEY) === '1';
     sessionStorage.removeItem(REDIRECT_PENDING_KEY);
     checkRedirectResult()
       .then((result) => {
         // A known Firebase issue: some browsers block the cross-origin storage access the
         // redirect flow's default authDomain relies on, and this just quietly resolves to
-        // null with no error — no exception to catch, nothing in the console. The only way
-        // to tell it apart from "nobody's tried to sign in yet" is the marker set right
-        // before we navigated away.
+        // null with no error at all. If we already tried popup and it also had to fall back
+        // to this, there's nothing else left to try automatically.
         if (!result && wasRedirectPending) {
-          setSignInError("Sign-in didn't complete in this browser. This can happen due to browser privacy settings — try the alternative method below.");
-          setShowPopupFallback(true);
+          setSignInError("Sign-in didn't complete in this browser. Please try again, or let me know if this keeps happening.");
         }
       })
       .catch((err) => {
@@ -95,27 +81,35 @@ export default function App() {
     return unsubscribe;
   }, []);
 
+  // Errors where the popup mechanism itself didn't work (blocked, unsupported, or closed
+  // before completing) — worth silently retrying via redirect. Anything else (wrong config,
+  // network failure, etc.) is a real error redirect won't fix either, so it's shown as-is.
+  const POPUP_FALLBACK_CODES = new Set([
+    'auth/popup-blocked',
+    'auth/operation-not-supported-in-this-environment',
+    'auth/popup-closed-by-user',
+    'auth/cancelled-popup-request',
+  ]);
+
   function handleSignIn() {
     setSigningIn(true);
     setSignInError('');
-    // signInWithRedirect navigates the whole page away to Google and back —
-    // there's no promise to await here, the result is picked up by
-    // checkRedirectResult() above once the page reloads.
-    signInWithGoogle().catch((err) => {
-      setSignInError(err?.message || 'Could not sign in. Please try again.');
-      setSigningIn(false);
-    });
-  }
-
-  function handleSignInPopup() {
-    setSigningIn(true);
-    setSignInError('');
     signInWithGooglePopup()
-      .then(() => setShowPopupFallback(false))
+      .then(() => setSigningIn(false))
       .catch((err) => {
+        if (POPUP_FALLBACK_CODES.has(err?.code)) {
+          // signInWithRedirect navigates the whole page away to Google and back — there's no
+          // promise to await here, the result is picked up by checkRedirectResult() above
+          // once the page reloads.
+          signInWithGoogle().catch((redirectErr) => {
+            setSignInError(redirectErr?.message || 'Could not sign in. Please try again.');
+            setSigningIn(false);
+          });
+          return;
+        }
         setSignInError(err?.message || 'Could not sign in. Please try again.');
-      })
-      .finally(() => setSigningIn(false));
+        setSigningIn(false);
+      });
   }
 
   async function handleSignOut() {
@@ -131,15 +125,7 @@ export default function App() {
   }
 
   if (!user) {
-    return (
-      <SignInScreen
-        onSignIn={handleSignIn}
-        onSignInPopup={handleSignInPopup}
-        signingIn={signingIn}
-        error={signInError}
-        showPopupFallback={showPopupFallback}
-      />
-    );
+    return <SignInScreen onSignIn={handleSignIn} signingIn={signingIn} error={signInError} />;
   }
 
   return <RecipeBox onSignOut={handleSignOut} key={user.uid} />;

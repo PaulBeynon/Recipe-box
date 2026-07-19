@@ -617,20 +617,25 @@ async function findImageOnWikimedia(title, tags) {
 // an image URL from search snippets, which is what made this feature unreliable before.
 async function findRecipePhoto(title, tags) {
   const wikimediaUrl = await findImageOnWikimedia(title, tags);
+  console.log('findRecipePhoto: Wikimedia result:', wikimediaUrl || '(none)');
   if (wikimediaUrl) {
     return { imageUrl: wikimediaUrl };
   }
 
   const pageUrl = await findRecipePageUrl(title, tags);
+  console.log('findRecipePhoto: candidate page:', pageUrl || '(none)');
   if (pageUrl) {
     const pageImageUrl = await fetchPageImage(pageUrl);
+    console.log('findRecipePhoto: og:image from that page:', pageImageUrl || '(none)');
     if (pageImageUrl) return { imageUrl: pageImageUrl };
   }
 
   // Last resort: ask Claude to guess a direct image URL, same as before. Worse odds than the
   // page-then-og:image approach above, but better than nothing for the rare case where Claude
   // can identify an image without a clean page URL to point at.
-  return findImageForRecipe(title, tags);
+  const fallback = await findImageForRecipe(title, tags);
+  console.log('findRecipePhoto: last-resort guessed imageUrl:', fallback.imageUrl || '(none)');
+  return fallback;
 }
 
 // Asks Claude to find a genuine recipe/food page for this dish — a normal web search task,
@@ -2743,6 +2748,7 @@ async function handleFindImage() {
       }
       const loads = await urlLoadsAsImage(result.imageUrl);
       if (!loads) {
+        console.warn('handleFindImage: image URL failed to load in-browser:', result.imageUrl);
         setErrorMsg("Found a photo, but the source wouldn't let it load here — you can always add your own from the edit screen.");
         return;
       }

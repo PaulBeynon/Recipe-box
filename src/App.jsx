@@ -81,14 +81,15 @@ export default function App() {
     return unsubscribe;
   }, []);
 
-  // Errors where the popup mechanism itself didn't work (blocked, unsupported, or closed
-  // before completing) — worth silently retrying via redirect. Anything else (wrong config,
-  // network failure, etc.) is a real error redirect won't fix either, so it's shown as-is.
+  // Only fall back to redirect for errors that mean the popup mechanism genuinely isn't
+  // available here (blocked outright, or unsupported in this environment) — not "popup-closed"
+  // or "cancelled-popup-request", which usually just mean a transient hiccup on this attempt.
+  // Falling back to redirect for those would be a downgrade if popup normally works fine on
+  // this browser but redirect doesn't (exactly the situation on some Chrome setups) — better
+  // to just let the person try the same button again.
   const POPUP_FALLBACK_CODES = new Set([
     'auth/popup-blocked',
     'auth/operation-not-supported-in-this-environment',
-    'auth/popup-closed-by-user',
-    'auth/cancelled-popup-request',
   ]);
 
   function handleSignIn() {

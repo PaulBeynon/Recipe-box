@@ -1,6 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { ChefHat, Loader2 } from 'lucide-react';
-import { auth, watchAuthState, signInWithGoogle, signOutUser, installFirestoreStorageShim, checkRedirectResult } from './firebase-init';
+import {
+  auth, watchAuthState, signInWithGoogle, signInWithGooglePopup, signOutUser,
+  installFirestoreStorageShim, checkRedirectResult, REDIRECT_PENDING_KEY,
+} from './firebase-init';
 import RecipeBox from './RecipeBox';
 
 const COLORS = {
@@ -12,7 +15,7 @@ const COLORS = {
   cardBorder: '#D8CBB0',
 };
 
-function SignInScreen({ onSignIn, signingIn, error }) {
+function SignInScreen({ onSignIn, onSignInPopup, signingIn, error, showPopupFallback }) {
   return (
     <div style={{
       minHeight: '100vh', background: COLORS.paper, display: 'flex', flexDirection: 'column',
@@ -41,6 +44,18 @@ function SignInScreen({ onSignIn, signingIn, error }) {
       {error && (
         <p style={{ color: COLORS.rust, fontSize: '13px', marginTop: '16px', maxWidth: '300px' }}>{error}</p>
       )}
+      {showPopupFallback && (
+        <button
+          onClick={onSignInPopup}
+          disabled={signingIn}
+          style={{
+            background: 'none', border: 'none', color: COLORS.inkFaint, fontSize: '13px',
+            textDecoration: 'underline', cursor: signingIn ? 'default' : 'pointer', marginTop: '14px', padding: 0,
+          }}
+        >
+          Try a different sign-in method
+        </button>
+      )}
     </div>
   );
 }
@@ -50,14 +65,28 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [signingIn, setSigningIn] = useState(false);
   const [signInError, setSignInError] = useState('');
+  const [showPopupFallback, setShowPopupFallback] = useState(false);
 
   useEffect(() => {
-    // Catches the result (or error) when the browser returns from Google's
-    // sign-in redirect. Runs once on load; harmless no-op if there was no
-    // pending redirect.
-    checkRedirectResult().catch((err) => {
-      setSignInError(err?.message || 'Sign-in failed. Please try again.');
-    });
+    // Catches the result (or error) when the browser returns from Google's sign-in redirect.
+    // Runs once on load; harmless no-op if there was no pending redirect.
+    const wasRedirectPending = sessionStorage.getItem(REDIRECT_PENDING_KEY) === '1';
+    sessionStorage.removeItem(REDIRECT_PENDING_KEY);
+    checkRedirectResult()
+      .then((result) => {
+        // A known Firebase issue: some browsers block the cross-origin storage access the
+        // redirect flow's default authDomain relies on, and this just quietly resolves to
+        // null with no error — no exception to catch, nothing in the console. The only way
+        // to tell it apart from "nobody's tried to sign in yet" is the marker set right
+        // before we navigated away.
+        if (!result && wasRedirectPending) {
+          setSignInError("Sign-in didn't complete in this browser. This can happen due to browser privacy settings — try the alternative method below.");
+          setShowPopupFallback(true);
+        }
+      })
+      .catch((err) => {
+        setSignInError(err?.message || 'Sign-in failed. Please try again.');
+      });
     const unsubscribe = watchAuthState((u) => {
       setUser(u);
       setAuthChecked(true);
@@ -78,6 +107,17 @@ export default function App() {
     });
   }
 
+  function handleSignInPopup() {
+    setSigningIn(true);
+    setSignInError('');
+    signInWithGooglePopup()
+      .then(() => setShowPopupFallback(false))
+      .catch((err) => {
+        setSignInError(err?.message || 'Could not sign in. Please try again.');
+      })
+      .finally(() => setSigningIn(false));
+  }
+
   async function handleSignOut() {
     await signOutUser();
   }
@@ -91,7 +131,15 @@ export default function App() {
   }
 
   if (!user) {
-    return <SignInScreen onSignIn={handleSignIn} signingIn={signingIn} error={signInError} />;
+    return (
+      <SignInScreen
+        onSignIn={handleSignIn}
+        onSignInPopup={handleSignInPopup}
+        signingIn={signingIn}
+        error={signInError}
+        showPopupFallback={showPopupFallback}
+      />
+    );
   }
 
   return <RecipeBox onSignOut={handleSignOut} key={user.uid} />;

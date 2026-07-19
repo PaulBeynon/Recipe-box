@@ -1,6 +1,6 @@
 import { initializeApp } from 'firebase/app';
 import {
-  getAuth, GoogleAuthProvider, signInWithRedirect, getRedirectResult, signOut, onAuthStateChanged,
+  getAuth, GoogleAuthProvider, signInWithRedirect, signInWithPopup, getRedirectResult, signOut, onAuthStateChanged,
 } from 'firebase/auth';
 import {
   initializeFirestore, getFirestore, persistentLocalCache, persistentMultipleTabManager,
@@ -47,8 +47,27 @@ try {
 }
 const googleProvider = new GoogleAuthProvider();
 
+// Set right before navigating away for a redirect sign-in, cleared once we're back — lets
+// App.jsx tell the difference between "nobody's tried to sign in yet" and "we just came back
+// from a redirect attempt with nothing to show for it" (a known Firebase issue: some browsers
+// — Chrome among them, depending on third-party storage settings — block the cross-origin
+// storage access signInWithRedirect's default authDomain relies on, and getRedirectResult()
+// then just quietly resolves to null with no error at all). See:
+// https://firebase.google.com/docs/auth/web/redirect-best-practices
+export const REDIRECT_PENDING_KEY = 'recipeBoxRedirectPending';
+
 export function signInWithGoogle() {
+  sessionStorage.setItem(REDIRECT_PENDING_KEY, '1');
   return signInWithRedirect(auth, googleProvider);
+}
+
+// Fallback for browsers where the redirect flow silently fails (see above) — popup-based
+// sign-in doesn't depend on that same cross-origin storage relay, so it isn't affected by the
+// same restriction. Kept as a fallback rather than the default because popup has its own
+// failure modes on other browsers (that's exactly why this app used redirect in the first
+// place), so the two methods cover each other's weak spots instead of one replacing the other.
+export function signInWithGooglePopup() {
+  return signInWithPopup(auth, googleProvider);
 }
 
 export function checkRedirectResult() {

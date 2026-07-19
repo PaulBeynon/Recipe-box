@@ -3,7 +3,7 @@ import {
   getAuth, GoogleAuthProvider, signInWithRedirect, getRedirectResult, signOut, onAuthStateChanged,
 } from 'firebase/auth';
 import {
-  initializeFirestore, persistentLocalCache, persistentSingleTabManager,
+  initializeFirestore, getFirestore, persistentLocalCache, persistentMultipleTabManager,
   doc, getDoc, setDoc, deleteDoc, collection, getDocs,
 } from 'firebase/firestore';
 
@@ -29,12 +29,22 @@ export const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
 // persistentLocalCache backs Firestore with IndexedDB so previously-loaded data (recipes,
 // shopping list, meal plan) stays readable offline, and any writes made offline queue up and
-// sync automatically once connectivity returns. persistentSingleTabManager keeps things simple
-// since this app is normally used in one tab at a time; if it's open in two tabs at once, only
-// the first one gets persistence (Firestore falls back to memory-only in the second).
-export const db = initializeFirestore(app, {
-  localCache: persistentLocalCache({ tabManager: persistentSingleTabManager() }),
-});
+// sync automatically once connectivity returns. persistentMultipleTabManager (rather than the
+// single-tab variant) avoids needing to acquire an exclusive lock — that's a safer choice
+// around a Google sign-in redirect, which tears the page down and reloads it from scratch;
+// an exclusive-lock manager has more ways to contend with itself across that reload. If
+// persistence setup fails for any reason (unsupported browser, storage restrictions, or
+// anything else), fall back to a plain in-memory Firestore instance instead — offline support
+// is a nice-to-have and should never be able to take anything else (like sign-in) down with it.
+export let db;
+try {
+  db = initializeFirestore(app, {
+    localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }),
+  });
+} catch (err) {
+  console.warn('Firestore offline persistence unavailable, falling back to in-memory:', err);
+  db = getFirestore(app);
+}
 const googleProvider = new GoogleAuthProvider();
 
 export function signInWithGoogle() {

@@ -446,6 +446,14 @@ async function testApiConnection() {
   return { status: response.status, ok: response.ok, raw: raw.slice(0, 500) };
 }
 
+// Appended to prompts where Claude is inventing or reconstructing a recipe rather than
+// transcribing an existing one — the app is used in the UK, so recipes it authors should read
+// like they were written for a UK kitchen. Deliberately NOT used in extractRecipeFromUrl/
+// FromText/FromImages, which exist specifically to preserve a real source's original wording
+// and units exactly as written (see those functions' prompts) — converting those would work
+// against the whole point of an accurate import.
+const UK_STYLE_INSTRUCTION = `Write it in UK English, for a UK kitchen: use UK terms (e.g. "mince" not "ground beef", "coriander" not "cilantro", "aubergine"/"courgette" not "eggplant"/"zucchini", "plain flour"/"self-raising flour" not "all-purpose flour", "grill" not "broil", "caster sugar" where that's the traditional choice). Use metric measurements — grams, millilitres, °C — rather than cups, ounces, or °F; convert confidently using standard reference weights for common ingredients (e.g. 1 cup plain flour ≈ 125g, 1 cup granulated sugar ≈ 200g, 1 cup butter ≈ 227g) rather than leaving things vague or mixed-unit.`;
+
 async function extractRecipeFromUrl(url) {
   const prompt = `Find and read the recipe at this exact URL: ${url}
 
@@ -578,7 +586,7 @@ async function extractRecipeFromVideoText(platform, title, text) {
     platform === 'tiktok' ? "a TikTok video's caption" :
     "an Instagram video's caption";
 
-  const prompt = `The text below was pulled from ${sourceLabel}${title ? ` titled "${title}"` : ''}. It may be conversational, informally worded, or missing precise quantities — reconstruct the best genuine, practical recipe you can from it, using standard technique and typical quantities to fill any real gaps rather than leaving things vague. Extract into strict JSON only — no markdown fences, no preamble, no commentary.
+  const prompt = `The text below was pulled from ${sourceLabel}${title ? ` titled "${title}"` : ''}. It may be conversational, informally worded, or missing precise quantities — reconstruct the best genuine, practical recipe you can from it, using standard technique and typical quantities to fill any real gaps rather than leaving things vague. ${UK_STYLE_INSTRUCTION} Extract into strict JSON only — no markdown fences, no preamble, no commentary.
 
 Return exactly this shape:
 {
@@ -625,7 +633,7 @@ ${text.slice(0, 12000)}
 // Writes a method for a recipe that has ingredients but no instructions yet — same
 // JSON-extraction pattern as the other generation helpers.
 async function generateStepsForRecipe(title, ingredients, servings, time) {
-  const prompt = `Write clear, complete cooking steps for this recipe, based on its title and ingredient list. Be practical and specific — reference the actual ingredients and quantities from the list where it's relevant to do so, and break the method into short, discrete steps (one clear action per step), the way a good recipe would.
+  const prompt = `Write clear, complete cooking steps for this recipe, based on its title and ingredient list. Be practical and specific — reference the actual ingredients and quantities from the list where it's relevant to do so, and break the method into short, discrete steps (one clear action per step), the way a good recipe would. Write in UK English and use UK cooking terms (e.g. "grill" not "broil") and °C for any temperatures you mention — but where the ingredient list below already uses a particular term for something (e.g. "ground beef"), refer to it that way in the steps too rather than switching terminology mid-recipe.
 
 Title: ${title}
 ${servings ? `Servings: ${servings}\n` : ''}${time ? `Total time: ${time}\n` : ''}Ingredients:
@@ -827,7 +835,7 @@ ${rawText.slice(0, 12000)}
 // method) into an actual full recipe, using the same JSON-extraction pattern as the
 // photo/URL/paste flows so it can drop straight into the same review screen.
 async function generateRecipeForDish(dish) {
-  const prompt = `Write an authentic, home-cook-friendly recipe for "${dish.dish}" from ${dish.country}. This should be a genuine, complete recipe a home cook could actually follow — proper quantities and clear steps — not a simplified summary. Return strict JSON only — no markdown fences, no preamble, no commentary.
+  const prompt = `Write an authentic, home-cook-friendly recipe for "${dish.dish}" from ${dish.country}. This should be a genuine, complete recipe a home cook could actually follow — proper quantities and clear steps — not a simplified summary. ${UK_STYLE_INSTRUCTION} Return strict JSON only — no markdown fences, no preamble, no commentary.
 
 Return exactly this shape:
 {
@@ -1091,7 +1099,7 @@ async function generateRecipeFromIngredients(base64DataUrls, ingredientsText) {
 
   const prompt = `${hasImages ? `Look at the photo(s) provided and identify the food ingredients visible in them${hasText ? ', combined with this additional list the user typed' : ''}.` : 'The user has typed a list of ingredients they have available.'}${hasText ? `\n\nIngredients they typed:\n${ingredientsText.trim()}` : ''}
 
-Using primarily these ingredients, invent a genuine, complete, practical recipe a home cook could actually follow — proper quantities and clear steps, not a vague idea. You may assume basic pantry staples are on hand (salt, pepper, oil, water, and similar) even if not listed or shown, but don't invent other significant ingredients unless truly necessary — if you do need to add something important that wasn't listed, keep it minor and sensible. It's fine not to use every single ingredient shown or listed if that makes for a better dish overall.
+Using primarily these ingredients, invent a genuine, complete, practical recipe a home cook could actually follow — proper quantities and clear steps, not a vague idea. You may assume basic pantry staples are on hand (salt, pepper, oil, water, and similar) even if not listed or shown, but don't invent other significant ingredients unless truly necessary — if you do need to add something important that wasn't listed, keep it minor and sensible. It's fine not to use every single ingredient shown or listed if that makes for a better dish overall. ${UK_STYLE_INSTRUCTION}
 
 Return strict JSON only — no markdown fences, no preamble, no commentary — in exactly this shape:
 {
@@ -1187,7 +1195,7 @@ Return strict JSON only — no markdown fences, no preamble, no commentary — i
 // Same multimodal request pattern as the other two image-based flows.
 async function generateRecipeFromMealPhoto(base64DataUrls, context) {
   const hasContext = context && context.trim().length > 0;
-  const prompt = `Look at the photo(s) of this cooked, plated meal and work out what dish it is (or your best reasonable guess if it's not a well-known dish).${hasContext ? ` The user has provided this context to help identify it correctly — trust it over your own guess where they conflict, since a photo alone can be ambiguous (e.g. a coffee cake can look like a chocolate cake): "${context.trim()}"` : ''} Then write a genuine, complete, practical recipe a home cook could follow to make it — proper quantities and clear steps, not a vague idea. Base it on how the dish is actually and typically made, using what's visible in the photo (main components, garnishes, sauces, apparent cooking method) as a guide, but fill in gaps with standard technique for that dish rather than leaving anything vague.
+  const prompt = `Look at the photo(s) of this cooked, plated meal and work out what dish it is (or your best reasonable guess if it's not a well-known dish).${hasContext ? ` The user has provided this context to help identify it correctly — trust it over your own guess where they conflict, since a photo alone can be ambiguous (e.g. a coffee cake can look like a chocolate cake): "${context.trim()}"` : ''} Then write a genuine, complete, practical recipe a home cook could follow to make it — proper quantities and clear steps, not a vague idea. Base it on how the dish is actually and typically made, using what's visible in the photo (main components, garnishes, sauces, apparent cooking method) as a guide, but fill in gaps with standard technique for that dish rather than leaving anything vague. ${UK_STYLE_INSTRUCTION}
 
 Return strict JSON only — no markdown fences, no preamble, no commentary — in exactly this shape:
 {

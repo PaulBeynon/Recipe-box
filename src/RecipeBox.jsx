@@ -664,6 +664,48 @@ Return strict JSON only — no markdown fences, no preamble, no commentary — i
   }
 }
 
+// Reconciles the steps with the ingredient list after the ingredients have been edited —
+// e.g. someone swaps "tomato ketchup" for "bbq sauce" in the ingredients but the steps still
+// say "spread the ketchup over...". Editing free-text fields independently means nothing keeps
+// them in sync automatically, so this is an explicit action rather than something that runs on
+// every edit. Deliberately scoped to fixing inconsistencies only — same steps, same order, same
+// level of detail — not a general rewrite.
+async function syncStepsWithIngredients(ingredientsArr, stepsArr) {
+  const prompt = `Here is a recipe's ingredient list and its current method steps. The ingredients may have been edited since the steps were written, so a step might still refer to an ingredient by an old name, form, or quantity it no longer has (e.g. the ingredient list now says "barbecue sauce" but a step still says "ketchup"). Update the wording in the steps so they're fully consistent with the current ingredient list below — fix any leftover references to ingredients that were changed, renamed, or removed — but otherwise leave the steps exactly as they are: same steps, same order, same actions, same level of detail. Don't rewrite anything that isn't actually inconsistent with the ingredients.
+
+Ingredients:
+${ingredientsArr.map((i) => `- ${i}`).join('\n')}
+
+Current steps:
+${stepsArr.map((s, i) => `${i + 1}. ${s}`).join('\n')}
+
+Return strict JSON only — no markdown fences, no preamble, no commentary — in exactly this shape:
+{
+  "steps": string[]  // same number and order of steps as above, wording updated only where it was inconsistent with the ingredients
+}`;
+
+  const data = await postToClaudeWithRetry({
+    model: 'claude-sonnet-4-6',
+    max_tokens: 1500,
+    messages: [{ role: 'user', content: prompt }],
+  });
+
+  const text = (data.content || []).map((b) => b.text || '').join('\n');
+  const clean = text.replace(/```json|```/g, '').trim();
+  const firstBrace = clean.indexOf('{');
+  const lastBrace = clean.lastIndexOf('}');
+  if (firstBrace === -1 || lastBrace === -1 || lastBrace <= firstBrace) {
+    throw new Error(`PARSE: No JSON object found in response: ${clean.slice(0, 200)}`);
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(clean.slice(firstBrace, lastBrace + 1));
+  } catch (parseErr) {
+    throw new Error(`PARSE: ${parseErr.message}`);
+  }
+  return parsed.steps || [];
+}
+
 // Looks up a real, verified photo on Wikimedia Commons for a dish name. Unlike asking
 // Claude to guess a URL from web search snippets, this confirms the file actually exists
 // (and is a real image, not an SVG logo/icon) before we ever try to use it. Free, no key,
@@ -1742,6 +1784,8 @@ function readAndCompressImage(file, maxDim = 1000, quality = 0.75) {
 function RecipeFormFields({ form, setForm, image, onImageChange }) {
   const photoInputRef = React.useRef(null);
   const [photoError, setPhotoError] = React.useState('');
+  const [syncingSteps, setSyncingSteps] = React.useState(false);
+  const [syncStepsError, setSyncStepsError] = React.useState('');
 
   async function handlePhotoPick(e) {
     const file = e.target.files?.[0];
@@ -1753,6 +1797,22 @@ function RecipeFormFields({ form, setForm, image, onImageChange }) {
       onImageChange(dataUrl);
     } catch (err) {
       setPhotoError(err?.message || 'Could not use that photo.');
+    }
+  }
+
+  async function handleSyncSteps() {
+    const ingredientsArr = form.ingredients.split('\n').map((s) => s.trim()).filter(Boolean);
+    const stepsArr = form.steps.split('\n').map((s) => s.trim()).filter(Boolean);
+    if (!ingredientsArr.length || !stepsArr.length) return;
+    setSyncingSteps(true);
+    setSyncStepsError('');
+    try {
+      const newSteps = await syncStepsWithIngredients(ingredientsArr, stepsArr);
+      if (newSteps.length) setForm({ ...form, steps: newSteps.join('\n') });
+    } catch {
+      setSyncStepsError("Couldn't update the steps. Please try again.");
+    } finally {
+      setSyncingSteps(false);
     }
   }
 
@@ -1801,6 +1861,21 @@ function RecipeFormFields({ form, setForm, image, onImageChange }) {
       </Field>
       <Field label="Steps (one per line)">
         <textarea rows={6} value={form.steps} onChange={(e) => setForm({ ...form, steps: e.target.value })} style={{ ...inputStyle(), resize: 'vertical' }} />
+        <button
+          type="button"
+          onClick={handleSyncSteps}
+          disabled={syncingSteps || !form.ingredients.trim() || !form.steps.trim()}
+          title="Fix any step wording left over from ingredients you've since changed (e.g. a step still saying &quot;ketchup&quot; after you swapped it for bbq sauce)"
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: '6px', background: 'none', border: 'none',
+            color: syncingSteps ? COLORS.inkFaint : COLORS.rust, fontSize: '12px', fontWeight: 600,
+            fontFamily: 'Inter, sans-serif', cursor: syncingSteps ? 'default' : 'pointer', padding: '6px 0 0',
+          }}
+        >
+          {syncingSteps ? <Loader2 size={12} className="animate-spin" /> : <RotateCcw size={12} />}
+          {syncingSteps ? 'Updating steps…' : 'Update steps to match ingredients'}
+        </button>
+        {syncStepsError && <p style={{ color: COLORS.rust, fontSize: '12px', margin: '4px 0 0' }}>{syncStepsError}</p>}
       </Field>
       <Field label="Tags (comma separated)">
         <input value={form.tags} onChange={(e) => setForm({ ...form, tags: e.target.value })} style={inputStyle()} />

@@ -199,3 +199,242 @@ exports.fetchPageImage = onRequest(
     }
   }
 );
+
+// ---------- video URL -> recipe text ----------
+// Reads a YouTube/TikTok/Instagram page server-side (CORS blocks this from the browser) and
+// returns whatever transcript/caption/description text can be found, plus a thumbnail. No AI
+// call happens here — the client sends the resulting text to claudeProxy as a separate step,
+// the same way pasted recipe text is handled.
+//
+// YouTube: the caption track and full (untruncated) description both live inside a JSON blob
+// (ytInitialPlayerResponse) embedded in the watch page — there's no official public API for
+// either. TikTok/Instagram: no caption/transcript data is publicly readable at all, so this
+// only reads the page's og:description meta tag (the post caption) — genuinely spoken content
+// with no matching caption text won't be captured. Instagram in particular often blocks
+// non-browser requests outright, so this is best-effort there.
+function getYouTubeVideoId(url) {
+  try {
+    const u = new URL(url);
+    const host = u.hostname.replace(/^www\./, '');
+    if (host === 'youtu.be') return u.pathname.slice(1).split('/')[0] || null;
+    if (u.pathname.startsWith('/shorts/')) return u.pathname.split('/')[2] || null;
+    if (u.searchParams.get('v')) return u.searchParams.get('v');
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+// Finds `marker` in `html`, then scans forward from the next "{" counting brace depth to find
+// the matching close — more robust than a regex against deeply nested JSON that may itself
+// contain braces inside strings.
+function extractBalancedJson(html, marker) {
+  const markerIdx = html.indexOf(marker);
+  if (markerIdx === -1) return null;
+  const start = html.indexOf('{', markerIdx);
+  if (start === -1) return null;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < html.length; i++) {
+    const ch = html[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') { inString = true; continue; }
+    if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth === 0) return html.slice(start, i + 1);
+    }
+  }
+  return null;
+}
+
+function decodeHtmlEntities(str) {
+  return String(str || '')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(parseInt(n, 10)));
+}
+
+const BROWSER_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
+
+async function extractYouTubeText(url) {
+  const videoId = getYouTubeVideoId(url);
+  if (!videoId) {
+    return { platform: 'youtube', title: '', text: '', imageUrl: '', error: "Couldn't find a video ID in that YouTube link." };
+  }
+
+  const pageRes = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
+    headers: { 'User-Agent': BROWSER_UA, 'Accept-Language': 'en-US,en;q=0.9' },
+  });
+  if (!pageRes.ok) {
+    return { platform: 'youtube', title: '', text: '', imageUrl: '', error: `Couldn't load that video page (HTTP ${pageRes.status}).` };
+  }
+  const html = await pageRes.text();
+
+  const playerJson = extractBalancedJson(html, 'ytInitialPlayerResponse');
+  let title = '';
+  let description = '';
+  let captionTracks = [];
+  if (playerJson) {
+    try {
+      const parsed = JSON.parse(playerJson);
+      title = parsed?.videoDetails?.title || '';
+      description = parsed?.videoDetails?.shortDescription || '';
+      captionTracks = parsed?.captions?.playerCaptionsTracklistRenderer?.captionTracks || [];
+    } catch (err) {
+      logger.warn('extractYouTubeText: could not parse ytInitialPlayerResponse', err);
+    }
+  }
+
+  let transcript = '';
+  if (captionTracks.length) {
+    const track =
+      captionTracks.find((t) => t.languageCode?.startsWith('en') && t.kind !== 'asr') ||
+      captionTracks.find((t) => t.languageCode?.startsWith('en')) ||
+      captionTracks[0];
+    if (track?.baseUrl) {
+      try {
+        const capRes = await fetch(track.baseUrl, { headers: { 'User-Agent': BROWSER_UA } });
+        if (capRes.ok) {
+          const xml = await capRes.text();
+          transcript = decodeHtmlEntities(xml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim());
+        }
+      } catch (err) {
+        logger.warn('extractYouTubeText: caption fetch failed', err);
+      }
+    }
+  }
+
+  const text = [description.trim(), transcript ? `Video transcript:\n${transcript}` : '']
+    .filter(Boolean)
+    .join('\n\n')
+    .slice(0, 20000);
+
+  const imageUrl = `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`;
+
+  if (!text) {
+    return { platform: 'youtube', title, text: '', imageUrl, error: 'No captions or description could be found for this video.' };
+  }
+  return { platform: 'youtube', title, text, imageUrl, error: '' };
+}
+
+async function extractCaptionPageText(url, platform) {
+  let html = '';
+  try {
+    const pageRes = await fetch(url, {
+      headers: { 'User-Agent': BROWSER_UA, 'Accept-Language': 'en-US,en;q=0.9' },
+      redirect: 'follow',
+    });
+    if (!pageRes.ok || !pageRes.body) {
+      return {
+        platform, title: '', text: '', imageUrl: '',
+        error: `Couldn't load that page (HTTP ${pageRes.status || 'unknown'}).${platform === 'instagram' ? ' Instagram often blocks this outside the app.' : ''}`,
+      };
+    }
+    const reader = pageRes.body.getReader();
+    const decoder = new TextDecoder();
+    let bytesRead = 0;
+    const maxBytes = 900000; // caption data can sit fairly deep in these pages
+    while (bytesRead < maxBytes) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytesRead += value.length;
+      html += decoder.decode(value, { stream: true });
+    }
+    reader.cancel().catch(() => {});
+  } catch (err) {
+    logger.warn(`extractCaptionPageText (${platform}): fetch failed`, err);
+    return { platform, title: '', text: '', imageUrl: '', error: 'Could not reach that page.' };
+  }
+
+  const metaTagRe = /<meta\s+[^>]*>/gi;
+  let ogTitle = '';
+  let ogDescription = '';
+  let ogImage = '';
+  let m;
+  while ((m = metaTagRe.exec(html))) {
+    const tag = m[0];
+    const propMatch = tag.match(/(?:property|name)\s*=\s*["']([^"']+)["']/i);
+    const contentMatch = tag.match(/content\s*=\s*["']([^"']*)["']/i);
+    if (!propMatch || !contentMatch) continue;
+    const prop = propMatch[1].toLowerCase();
+    if (prop === 'og:title' && !ogTitle) ogTitle = contentMatch[1];
+    if (prop === 'og:description' && !ogDescription) ogDescription = contentMatch[1];
+    if (prop === 'og:image' && !ogImage) ogImage = contentMatch[1];
+  }
+
+  const text = decodeHtmlEntities(ogDescription).trim();
+  let imageUrl = ogImage;
+  if (imageUrl) {
+    try { imageUrl = new URL(imageUrl, url).href; } catch { imageUrl = ''; }
+  }
+
+  if (!text) {
+    return {
+      platform, title: decodeHtmlEntities(ogTitle), text: '', imageUrl,
+      error: `Couldn't find a caption on that page — ${platform === 'instagram' ? 'Instagram' : 'TikTok'} often blocks this kind of request outside the app. Try opening the video, copying the caption text, and pasting it here instead.`,
+    };
+  }
+  return { platform, title: decodeHtmlEntities(ogTitle), text, imageUrl, error: '' };
+}
+
+exports.extractVideoText = onRequest(
+  { region: 'europe-west2', cors: true, timeoutSeconds: 30, memory: '256MiB' },
+  async (req, res) => {
+    if (req.method !== 'POST') {
+      res.status(405).json({ error: 'Method not allowed' });
+      return;
+    }
+
+    const authHeader = req.headers.authorization || '';
+    const match = authHeader.match(/^Bearer (.+)$/);
+    if (!match) {
+      res.status(401).json({ error: 'Missing bearer token' });
+      return;
+    }
+    try {
+      await admin.auth().verifyIdToken(match[1]);
+    } catch (err) {
+      res.status(401).json({ error: 'Invalid or expired token' });
+      return;
+    }
+
+    const targetUrl = req.body && req.body.url;
+    if (!targetUrl || !/^https?:\/\//i.test(targetUrl)) {
+      res.status(400).json({ error: 'A valid http(s) url is required' });
+      return;
+    }
+
+    let hostname = '';
+    try {
+      hostname = new URL(targetUrl).hostname.replace(/^www\./, '');
+    } catch {
+      res.status(400).json({ error: 'Not a valid URL' });
+      return;
+    }
+
+    try {
+      if (/(^|\.)youtube\.com$/.test(hostname) || hostname === 'youtu.be') {
+        res.status(200).json(await extractYouTubeText(targetUrl));
+      } else if (/(^|\.)tiktok\.com$/.test(hostname)) {
+        res.status(200).json(await extractCaptionPageText(targetUrl, 'tiktok'));
+      } else if (/(^|\.)instagram\.com$/.test(hostname)) {
+        res.status(200).json(await extractCaptionPageText(targetUrl, 'instagram'));
+      } else {
+        res.status(200).json({ platform: 'unknown', title: '', text: '', imageUrl: '', error: "That doesn't look like a YouTube, TikTok, or Instagram link." });
+      }
+    } catch (err) {
+      logger.error('extractVideoText failed', err);
+      res.status(200).json({ platform: 'unknown', title: '', text: '', imageUrl: '', error: 'Something went wrong reading that page.' });
+    }
+  }
+);

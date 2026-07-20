@@ -25,6 +25,7 @@ const firebaseConfig = {
 // If you ever redeploy under a different region or function name, update this.
 export const CLOUD_FUNCTION_URL = 'https://europe-west2-recipe-box-80ec6.cloudfunctions.net/claudeProxy';
 export const FETCH_PAGE_IMAGE_URL = 'https://europe-west2-recipe-box-80ec6.cloudfunctions.net/fetchPageImage';
+export const EXTRACT_VIDEO_TEXT_URL = 'https://europe-west2-recipe-box-80ec6.cloudfunctions.net/extractVideoText';
 
 export const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);

@@ -2535,7 +2535,7 @@ export default function RecipeBox({ onSignOut }) {
       // These were photos of raw ingredients, not the finished dish — clear them so
       // the review screen and save step don't mistake them for the recipe's photo.
       setPendingPhotos([]);
-      setErrorMsg('Heads up: this recipe was invented by Claude to use the ingredients you provided, rather than extracted from a real source — a good starting point, worth double-checking quantities and technique.');
+      setErrorMsg('Heads up: this recipe was invented to use the ingredients you provided, rather than extracted from a real source — a good starting point, worth double-checking quantities and technique.');
       setAddStage('review');
     } catch (err) {
       const msg = err?.message || '';
@@ -2569,7 +2569,7 @@ export default function RecipeBox({ onSignOut }) {
       });
       // Unlike the ingredients flow, this photo IS a genuine photo of the finished dish,
       // so keep it in pendingPhotos — it becomes the recipe's hero image on save.
-      setErrorMsg('Heads up: this recipe was worked out by Claude from the photo, rather than a real source — a good starting point, worth double-checking quantities and technique.');
+      setErrorMsg('Heads up: this recipe was worked out from the photo, rather than a real source — a good starting point, worth double-checking quantities and technique.');
       setAddStage('review');
     } catch (err) {
       const msg = err?.message || '';
@@ -3740,8 +3740,8 @@ async function handleFindImage() {
                   { mode: 'photo', icon: Camera, title: 'Photograph a recipe', desc: 'From a magazine, cookbook, or clipping.' },
                   { mode: 'paste', icon: ExternalLink, title: 'From a URL or pasted text', desc: "Paste a link and Claude will look it up, or paste the recipe text itself." },
                   { mode: 'manual', icon: Pencil, title: 'Add your own recipe', desc: 'Type it in yourself — no AI involved.' },
-                  { mode: 'ingredients', icon: Sparkles, title: 'From ingredients I have', desc: "Photograph or list what's in the fridge and Claude will invent something." },
-                  { mode: 'meal', icon: Utensils, title: 'From a photo of a meal', desc: "Snap a finished dish — in a restaurant, from a friend, wherever — and Claude will work out a recipe for it." },
+                  { mode: 'ingredients', icon: Sparkles, title: 'From ingredients I have', desc: "Photograph or list what's in the fridge and we'll invent something." },
+                  { mode: 'meal', icon: Utensils, title: 'From a photo of a meal', desc: "Snap a finished dish — in a restaurant, from a friend, wherever — and we'll work out a recipe for it." },
                 ].map((opt) => (
                   <button
                     key={opt.mode}
@@ -3876,7 +3876,7 @@ async function handleFindImage() {
                     Cook from what you've got
                   </p>
                   <p style={{ fontSize: '13px', color: COLORS.inkFaint, marginBottom: '18px' }}>
-                    Photograph what's in the fridge or cupboard, list what you have, or both — Claude will invent a recipe using it.
+                    Photograph what's in the fridge or cupboard, list what you have, or both — we'll invent a recipe using it.
                   </p>
 
                   {pendingPhotos.length > 0 && (
@@ -3937,7 +3937,7 @@ async function handleFindImage() {
                     From a photo of a meal
                   </p>
                   <p style={{ fontSize: '13px', color: COLORS.inkFaint, marginBottom: '18px' }}>
-                    Snap a finished, plated dish and Claude will work out what it is and how to make it. The photo becomes the recipe's picture.
+                    Snap a finished, plated dish and we'll work out what it is and how to make it. The photo becomes the recipe's picture.
                   </p>
 
                   {pendingPhotos.length > 0 && (

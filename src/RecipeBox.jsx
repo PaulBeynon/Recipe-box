@@ -957,6 +957,84 @@ Rules: only include an entry for a line that actually needs to change because of
   return Array.isArray(parsed.suggestions) ? parsed.suggestions : [];
 }
 
+// Same suggestion shape and review UI as analyzeNoteForChanges (ingredient/step diffs the user
+// applies individually, not a silent rewrite) — just driven by a chosen diet instead of a
+// free-text note. Also checks the steps for mentions of a substituted ingredient, same as the
+// substitution case in analyzeNoteForChanges, so "swap the butter for oil" doesn't leave a step
+// still saying "melt the butter".
+async function analyzeDietarySwap(dietType, ingredients, steps) {
+  const prompt = `Adapt this recipe to be ${dietType}. For every ingredient that conflicts with a ${dietType} diet, suggest a specific, sensible substitute that keeps the dish working — similar role, texture, and flavour where possible — rather than just removing it. For every step that names an ingredient you're substituting, suggest updated step wording so the method still makes sense with the substitute in place. Don't suggest anything for ingredients or steps that are already ${dietType}-safe.
+
+Current ingredients (0-indexed):
+${ingredients.map((ing, i) => `${i}: ${ing}`).join('\n') || '(none)'}
+
+Current steps (0-indexed):
+${steps.map((s, i) => `${i}: ${s}`).join('\n') || '(none)'}
+
+Return strict JSON only — no markdown fences, no preamble, no commentary — in exactly this shape:
+{
+  "suggestions": [
+    {
+      "type": "ingredient",
+      "index": number,
+      "current": string,
+      "suggested": string,
+      "reason": string
+    }
+  ]
+}
+Rules: only include a line that actually needs to change to be ${dietType}. "suggested" must be the full replacement line, written in the same format/style as "current" (same units, same sentence structure). "reason" is one short clause naming what made the original non-${dietType} and what it's swapped for. If the recipe is already fully ${dietType} as written, return {"suggestions": []}.`;
+
+  const data = await postToClaudeWithRetry({
+    model: 'claude-sonnet-4-6',
+    max_tokens: 1200,
+    messages: [{ role: 'user', content: prompt }],
+  });
+
+  const text = (data.content || []).map((b) => b.text || '').join('\n');
+  const clean = text.replace(/```json|```/g, '').trim();
+  const firstBrace2 = clean.indexOf('{');
+  const lastBrace2 = clean.lastIndexOf('}');
+  if (firstBrace2 === -1 || lastBrace2 === -1) throw new Error('No JSON found');
+  const parsed = JSON.parse(clean.slice(firstBrace2, lastBrace2 + 1));
+  return Array.isArray(parsed.suggestions) ? parsed.suggestions : [];
+}
+
+// Rough, AI-estimated nutrition per serving — general knowledge of typical ingredient nutrition
+// and standard serving math, not a lab analysis. The UI labels it as an estimate; this function
+// deliberately doesn't try to look more precise than that (whole-number grams, calories to the
+// nearest 10). Cached on the recipe (see handleEstimateNutrition) so it isn't re-run on every
+// visit to the recipe — "Re-estimate" recomputes it on demand.
+async function estimateRecipeNutrition(ingredients, servings) {
+  const prompt = `Estimate the approximate nutrition per serving for this recipe. This is a rough, general estimate for a home cook — use typical nutrition values for common ingredients and standard serving math, not precise lab analysis.
+
+Ingredients:
+${(ingredients || []).map((i) => `- ${i}`).join('\n')}
+
+Servings: ${servings || 'not specified — assume a normal single serving for this type of dish'}
+
+Return strict JSON only — no markdown fences, no preamble, no commentary — in exactly this shape:
+{
+  "calories": number,
+  "protein": number,
+  "carbs": number,
+  "fat": number
+}`;
+
+  const data = await postToClaudeWithRetry({
+    model: 'claude-sonnet-4-6',
+    max_tokens: 400,
+    messages: [{ role: 'user', content: prompt }],
+  });
+
+  const text = (data.content || []).map((b) => b.text || '').join('\n');
+  const clean = text.replace(/```json|```/g, '').trim();
+  const firstBrace3 = clean.indexOf('{');
+  const lastBrace3 = clean.lastIndexOf('}');
+  if (firstBrace3 === -1 || lastBrace3 === -1) throw new Error('No JSON found');
+  return JSON.parse(clean.slice(firstBrace3, lastBrace3 + 1));
+}
+
 async function mergeIngredientsForShoppingList(groups) {
   const listing = groups
     .map((g) => `${g.recipeTitle}:\n${(g.ingredients || []).map((i) => `- ${i}`).join('\n')}`)
@@ -2041,6 +2119,8 @@ export default function RecipeBox({ onSignOut }) {
   const [noteSaved, setNoteSaved] = useState(false);
   const [suggestions, setSuggestions] = useState([]);
   const [suggestionsLoading, setSuggestionsLoading] = useState(false);
+  const [dietaryLoadingType, setDietaryLoadingType] = useState(null); // which diet chip triggered the current suggestionsLoading run, or null for the notes flow
+  const [estimatingNutrition, setEstimatingNutrition] = useState(false);
 
   // cook mode
   const [cookStepIndex, setCookStepIndex] = useState(0);
@@ -3050,6 +3130,7 @@ export default function RecipeBox({ onSignOut }) {
     if (!noteDraft.trim()) return;
     setSuggestions([]);
     setSuggestionsLoading(true);
+    setDietaryLoadingType(null);
     try {
       const raw = await analyzeNoteForChanges(noteDraft.trim(), detail.ingredients || [], detail.steps || []);
       setSuggestions(raw.map((s) => ({ id: uid(), ...s })));
@@ -3057,6 +3138,40 @@ export default function RecipeBox({ onSignOut }) {
       setErrorMsg('Could not check for suggestions right now. Please try again.');
     } finally {
       setSuggestionsLoading(false);
+    }
+  }
+
+  async function runDietarySwap(dietType) {
+    if (!detail || suggestionsLoading) return;
+    setSuggestions([]);
+    setSuggestionsLoading(true);
+    setDietaryLoadingType(dietType);
+    try {
+      const raw = await analyzeDietarySwap(dietType, detail.ingredients || [], detail.steps || []);
+      setSuggestions(raw.map((s) => ({ id: uid(), ...s })));
+      if (raw.length === 0) {
+        setErrorMsg(`Good news — this recipe already looks ${dietType} as written.`);
+      }
+    } catch {
+      setErrorMsg(`Could not check ${dietType} substitutions right now. Please try again.`);
+    } finally {
+      setSuggestionsLoading(false);
+      setDietaryLoadingType(null);
+    }
+  }
+
+  async function handleEstimateNutrition() {
+    if (!detail || estimatingNutrition) return;
+    setEstimatingNutrition(true);
+    try {
+      const nutrition = await estimateRecipeNutrition(detail.ingredients || [], detail.servings);
+      const updated = { ...detail, nutrition };
+      await window.storage.set(`recipe-full:${updated.id}`, JSON.stringify(updated), false);
+      setDetail(updated);
+    } catch {
+      setErrorMsg('Could not estimate nutrition right now. Please try again.');
+    } finally {
+      setEstimatingNutrition(false);
     }
   }
 
@@ -4486,6 +4601,52 @@ async function handleFindImage() {
                 {detail.ingredients.map((ing, i) => <li key={i}>{scaleIngredientText(ing, scaleFactor)}</li>)}
               </ul>
 
+              <h3 style={sectionHeader()}>Nutrition (per serving)</h3>
+              {detail.nutrition ? (
+                <div style={{ marginBottom: '18px' }}>
+                  <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '8px' }}>
+                    {[
+                      ['Calories', detail.nutrition.calories, 'kcal'],
+                      ['Protein', detail.nutrition.protein, 'g'],
+                      ['Carbs', detail.nutrition.carbs, 'g'],
+                      ['Fat', detail.nutrition.fat, 'g'],
+                    ].map(([label, value, unit]) => (
+                      value === undefined || value === null ? null : (
+                        <div key={label} style={{ background: COLORS.paper, border: `1px solid ${COLORS.cardBorder}`, borderRadius: '4px', padding: '8px 12px', minWidth: '68px', textAlign: 'center' }}>
+                          <div style={{ fontFamily: 'Fraunces, serif', fontWeight: 700, fontSize: '16px', color: COLORS.ink }}>{value}{unit === 'g' ? 'g' : ''}</div>
+                          <div style={{ fontSize: '10px', color: COLORS.inkFaint, textTransform: 'uppercase', letterSpacing: '0.03em' }}>{label}</div>
+                        </div>
+                      )
+                    ))}
+                  </div>
+                  <p style={{ fontSize: '11.5px', color: COLORS.inkFaint, fontStyle: 'italic', margin: '0 0 6px' }}>
+                    Rough AI estimate, not a verified lab analysis.
+                  </p>
+                  <button
+                    onClick={handleEstimateNutrition}
+                    disabled={estimatingNutrition}
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', background: 'none', border: 'none', color: estimatingNutrition ? COLORS.inkFaint : COLORS.rust, fontSize: '12px', fontWeight: 600, cursor: estimatingNutrition ? 'default' : 'pointer', padding: 0 }}
+                  >
+                    {estimatingNutrition ? <Loader2 size={12} className="animate-spin" /> : <RotateCcw size={12} />}
+                    {estimatingNutrition ? 'Re-estimating…' : 'Re-estimate'}
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={handleEstimateNutrition}
+                  disabled={estimatingNutrition}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: '6px', background: 'none',
+                    border: `1px solid ${COLORS.cardBorder}`, color: COLORS.inkFaint, borderRadius: '3px',
+                    padding: '9px 16px', fontSize: '13px', fontWeight: 600, marginBottom: '18px',
+                    cursor: estimatingNutrition ? 'default' : 'pointer', opacity: estimatingNutrition ? 0.75 : 1,
+                  }}
+                >
+                  {estimatingNutrition ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
+                  {estimatingNutrition ? 'Estimating…' : 'Estimate nutrition'}
+                </button>
+              )}
+
               <h3 style={sectionHeader()}>Steps</h3>
               {detail.steps.length === 0 ? (
                 <div style={{ background: COLORS.paper, border: `1px dashed ${COLORS.cardBorder}`, borderRadius: '4px', padding: '18px', marginBottom: '20px', textAlign: 'center' }}>
@@ -4518,6 +4679,36 @@ async function handleFindImage() {
                   ))}
                 </div>
               )}
+
+              <h3 style={sectionHeader()}>Dietary swap</h3>
+              <p style={{ fontSize: '12.5px', color: COLORS.inkFaint, margin: '0 0 10px', lineHeight: 1.45 }}>
+                Get ingredient and step substitutions for a different diet — review and apply each one below, same as with note suggestions.
+              </p>
+              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '20px' }}>
+                {[
+                  ['vegetarian', 'Vegetarian'],
+                  ['vegan', 'Vegan'],
+                  ['gluten-free', 'Gluten-free'],
+                  ['dairy-free', 'Dairy-free'],
+                ].map(([key, label]) => (
+                  <button
+                    key={key}
+                    onClick={() => runDietarySwap(key)}
+                    disabled={suggestionsLoading}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: '6px', background: 'none',
+                      border: `1px solid ${dietaryLoadingType === key ? COLORS.mustard : COLORS.cardBorder}`,
+                      color: dietaryLoadingType === key ? COLORS.rustDark : COLORS.inkFaint,
+                      borderRadius: '3px', padding: '7px 14px', fontSize: '12px', fontWeight: 600,
+                      cursor: suggestionsLoading ? 'default' : 'pointer',
+                      opacity: suggestionsLoading && dietaryLoadingType !== key ? 0.5 : 1,
+                    }}
+                  >
+                    {dietaryLoadingType === key ? <Loader2 size={12} className="animate-spin" /> : <Leaf size={12} />}
+                    {label}
+                  </button>
+                ))}
+              </div>
 
               <h3 style={sectionHeader()}>Notes</h3>
               <textarea
@@ -4552,7 +4743,7 @@ async function handleFindImage() {
 
               {suggestionsLoading && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: '7px', color: COLORS.inkFaint, fontSize: '12.5px', marginBottom: '20px' }}>
-                  <Loader2 size={13} className="animate-spin" /> Checking if this note suggests a change…
+                  <Loader2 size={13} className="animate-spin" /> {dietaryLoadingType ? `Checking for ${dietaryLoadingType} substitutions…` : 'Checking if this note suggests a change…'}
                 </div>
               )}
 

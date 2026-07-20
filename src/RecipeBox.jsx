@@ -4178,15 +4178,13 @@ async function handleFindImage() {
                     </button>
                   )}
 
-                  {pendingPhotos.length > 0 && (
-                    <input
-                      type="text"
-                      value={mealPhotoContext}
-                      onChange={(e) => setMealPhotoContext(e.target.value)}
-                      placeholder="Optional: anything that helps identify it, e.g. &quot;this is a coffee cake, not chocolate&quot;"
-                      style={{ ...inputStyle(), marginBottom: '14px', textAlign: 'left' }}
-                    />
-                  )}
+                  <input
+                    type="text"
+                    value={mealPhotoContext}
+                    onChange={(e) => setMealPhotoContext(e.target.value)}
+                    placeholder="Optional: anything that helps identify it, e.g. &quot;this is a coffee cake, not chocolate&quot;"
+                    style={{ ...inputStyle(), marginTop: '14px', marginBottom: '14px', textAlign: 'left' }}
+                  />
 
                   {pendingPhotos.length > 0 && (
                     <button

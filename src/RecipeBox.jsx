@@ -6,7 +6,7 @@ import {
   ShoppingCart, CheckSquare, Square, ListPlus, Sparkles, Play, Pause, RotateCcw, Calendar, Copy, ExternalLink,
   Upload, Globe, Leaf, LogOut, Mic, MicOff,
 } from 'lucide-react';
-import { CLOUD_FUNCTION_URL, FETCH_PAGE_IMAGE_URL, auth } from './firebase-init';
+import { CLOUD_FUNCTION_URL, FETCH_PAGE_IMAGE_URL, EXTRACT_VIDEO_TEXT_URL, auth } from './firebase-init';
 
 // Every Anthropic API call is routed through our own Cloud Function rather than
 // api.anthropic.com directly — the function holds the real API key server-side and
@@ -505,6 +505,24 @@ function looksLikeUrl(str) {
   return /^https?:\/\/\S+$/i.test(str.trim());
 }
 
+// Recognises YouTube/TikTok/Instagram links specifically, so the paste flow can route them
+// to the video-reading Cloud Function instead of the generic web-search page extraction,
+// which can't actually watch or listen to a video.
+function looksLikeVideoUrl(str) {
+  if (!looksLikeUrl(str)) return false;
+  try {
+    const hostname = new URL(str.trim()).hostname.replace(/^www\./, '');
+    return (
+      /(^|\.)youtube\.com$/.test(hostname) ||
+      hostname === 'youtu.be' ||
+      /(^|\.)tiktok\.com$/.test(hostname) ||
+      /(^|\.)instagram\.com$/.test(hostname)
+    );
+  } catch {
+    return false;
+  }
+}
+
 // Asks the Cloud Function to fetch a page and read its real og:image/twitter:image meta tag —
 // a genuine value the page itself set, not a model's guess. Fails soft (empty string) on any
 // problem, since the caller always has extractRecipeFromUrl's imageUrl guess as a fallback.
@@ -522,6 +540,86 @@ async function fetchPageImage(url) {
   } catch {
     return '';
   }
+}
+
+// Asks the Cloud Function to read a YouTube/TikTok/Instagram page server-side (CORS blocks
+// this from the browser) and return whatever transcript/caption/description text it found,
+// plus a thumbnail. No AI call here — this is a plain fetch-and-parse step; the resulting
+// text gets sent to Claude separately via extractRecipeFromVideoText.
+async function fetchVideoText(url) {
+  const headers = await getAuthedHeaders();
+  let response;
+  try {
+    response = await fetch(EXTRACT_VIDEO_TEXT_URL, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ url }),
+    });
+  } catch (networkErr) {
+    throw new Error(`NETWORK: ${networkErr?.name || 'Error'} — ${networkErr?.message || 'no message'}`);
+  }
+  if (!response.ok) {
+    throw new Error(`VIDEOERR: Couldn't reach the video-reading service (HTTP ${response.status}).`);
+  }
+  const data = await response.json();
+  if (data.error && !data.text) {
+    throw new Error(`VIDEOERR: ${data.error}`);
+  }
+  return data;
+}
+
+// Turns the transcript/caption/description text fetchVideoText found into a recipe — same
+// JSON-extraction pattern as extractRecipeFromText, but the prompt expects spoken or
+// caption-style text rather than a formatted recipe page, and is explicit that quantities
+// mentioned in speech or captions may be approximate or missing.
+async function extractRecipeFromVideoText(platform, title, text) {
+  const sourceLabel =
+    platform === 'youtube' ? "a YouTube video's transcript and description" :
+    platform === 'tiktok' ? "a TikTok video's caption" :
+    "an Instagram video's caption";
+
+  const prompt = `The text below was pulled from ${sourceLabel}${title ? ` titled "${title}"` : ''}. It may be conversational, informally worded, or missing precise quantities — reconstruct the best genuine, practical recipe you can from it, using standard technique and typical quantities to fill any real gaps rather than leaving things vague. Extract into strict JSON only — no markdown fences, no preamble, no commentary.
+
+Return exactly this shape:
+{
+  "title": string,
+  "servings": string,
+  "time": string,  // total time, in a short standardized format like "15 min", "1 hr", or "1 hr 30 min" (use "hr"/"min", not "hours"/"minutes")
+  "ingredients": string[],
+  "steps": string[],  // Break the method into short, discrete steps — one clear action per step.
+  "tags": string[],  // 2-5 short lowercase tags like cuisine or meal type
+  "error": string  // leave as "" if you could reconstruct a usable recipe. Only set this, and leave ingredients/steps empty, if the text has nothing to do with food or cooking at all.
+}
+
+Text:
+"""
+${text.slice(0, 12000)}
+"""`;
+
+  const data = await postToClaudeWithRetry({
+    model: 'claude-sonnet-4-6',
+    max_tokens: 2000,
+    messages: [{ role: 'user', content: prompt }],
+  });
+
+  const responseText = (data.content || []).map((b) => b.text || '').join('\n');
+  const clean = responseText.replace(/```json|```/g, '').trim();
+  const firstBrace = clean.indexOf('{');
+  const lastBrace = clean.lastIndexOf('}');
+  if (firstBrace === -1 || lastBrace === -1 || lastBrace <= firstBrace) {
+    throw new Error(`PARSE: No JSON object found in response: ${clean.slice(0, 200)}`);
+  }
+  const jsonSlice = clean.slice(firstBrace, lastBrace + 1);
+  let parsed;
+  try {
+    parsed = JSON.parse(jsonSlice);
+  } catch (parseErr) {
+    throw new Error(`PARSE: ${parseErr.message} — raw: ${jsonSlice.slice(0, 200)}`);
+  }
+  if (parsed && parsed.error && !(parsed.title || (parsed.ingredients || []).length || (parsed.steps || []).length)) {
+    throw new Error(`VIDEOERR: ${parsed.error}`);
+  }
+  return parsed;
 }
 
 // Writes a method for a recipe that has ingredients but no instructions yet — same
@@ -1814,6 +1912,7 @@ export default function RecipeBox({ onSignOut }) {
   const [ingredientsText, setIngredientsText] = useState('');
   const [generatingFromIngredients, setGeneratingFromIngredients] = useState(false);
   const [generatingFromMealPhoto, setGeneratingFromMealPhoto] = useState(false);
+  const [extractingVideo, setExtractingVideo] = useState(false);
   const [generatingSteps, setGeneratingSteps] = useState(false);
   const [pendingPhotos, setPendingPhotos] = useState([]); // [{full, thumb}]
   const [fetchedImageUrl, setFetchedImageUrl] = useState('');
@@ -2421,6 +2520,43 @@ export default function RecipeBox({ onSignOut }) {
     if (!pastedText.trim()) return;
     setAddStage('extracting');
     setUrlImageBlocked(false);
+    const trimmed = pastedText.trim();
+    const isVideo = looksLikeVideoUrl(trimmed);
+
+    if (isVideo) {
+      setExtractingVideo(true);
+      try {
+        const video = await fetchVideoText(trimmed);
+        const extracted = await extractRecipeFromVideoText(video.platform, video.title, video.text);
+        setForm({
+          title: extracted.title || video.title || '',
+          servings: extracted.servings || '',
+          time: extracted.time || '',
+          ingredients: (extracted.ingredients || []).join('\n'),
+          steps: (extracted.steps || []).join('\n'),
+          tags: (extracted.tags || []).join(', '),
+        });
+        if (video.imageUrl) setFetchedImageUrl(video.imageUrl);
+        setUrlExtractHadNoImage(!video.imageUrl);
+        const sourceDesc = video.platform === 'youtube' ? "video's captions/description" : "video's caption";
+        setErrorMsg(`Heads up: this recipe was reconstructed from the ${sourceDesc}, not a written source — worth double-checking quantities and technique.`);
+        setAddStage('review');
+      } catch (err) {
+        const msg = err?.message || '';
+        if (msg.startsWith('VIDEOERR')) setErrorMsg(`Couldn't get a recipe from that video: ${msg.replace('VIDEOERR: ', '')}`);
+        else if (msg.startsWith('NETWORK')) setErrorMsg(`Network error: ${msg.replace('NETWORK: ', '')}`);
+        else if (msg.startsWith('API')) setErrorMsg(`API error: ${msg.replace('API: ', '')}`);
+        else if (msg.startsWith('READ')) setErrorMsg(`Couldn't read the API response: ${msg.replace('READ: ', '')}`);
+        else if (msg.startsWith('PARSE')) setErrorMsg(`Got a response but couldn't parse it as a recipe. ${msg.replace('PARSE: ', '')}`);
+        else setErrorMsg(`Something went wrong: ${msg || 'unknown error'}`);
+        setForm({ title: '', servings: '', time: '', ingredients: '', steps: '', tags: '' });
+        setAddStage('review');
+      } finally {
+        setExtractingVideo(false);
+      }
+      return;
+    }
+
     try {
       const isUrl = looksLikeUrl(pastedText);
       const [extracted, pageImageUrl] = await Promise.all([
@@ -2447,7 +2583,7 @@ export default function RecipeBox({ onSignOut }) {
       setAddStage('review');
     } catch (err) {
       const msg = err?.message || '';
-      if (msg.startsWith('PAGEERR')) setErrorMsg(`Claude couldn't access that page (${msg.replace('PAGEERR: ', '')}). Please open the page yourself, copy the recipe text, and paste it here instead.`);
+      if (msg.startsWith('PAGEERR')) setErrorMsg(`Couldn't access that page (${msg.replace('PAGEERR: ', '')}). Please open the page yourself, copy the recipe text, and paste it here instead.`);
       else if (msg.startsWith('NETWORK')) setErrorMsg(`Network error: ${msg.replace('NETWORK: ', '')}`);
       else if (msg.startsWith('API')) setErrorMsg(`API error: ${msg.replace('API: ', '')}`);
       else if (msg.startsWith('READ')) setErrorMsg(`Couldn't read the API response: ${msg.replace('READ: ', '')}`);
@@ -3738,7 +3874,7 @@ async function handleFindImage() {
               <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '20px' }}>
                 {[
                   { mode: 'photo', icon: Camera, title: 'Photograph a recipe', desc: 'From a magazine, cookbook, or clipping.' },
-                  { mode: 'paste', icon: ExternalLink, title: 'From a URL or pasted text', desc: "Paste a link and Claude will look it up, or paste the recipe text itself." },
+                  { mode: 'paste', icon: ExternalLink, title: 'From a URL or pasted text', desc: "Paste a link — including YouTube, TikTok, or Instagram — or the recipe text itself." },
                   { mode: 'manual', icon: Pencil, title: 'Add your own recipe', desc: 'Type it in yourself — no AI involved.' },
                   { mode: 'ingredients', icon: Sparkles, title: 'From ingredients I have', desc: "Photograph or list what's in the fridge and we'll invent something." },
                   { mode: 'meal', icon: Utensils, title: 'From a photo of a meal', desc: "Snap a finished dish — in a restaurant, from a friend, wherever — and we'll work out a recipe for it." },
@@ -3848,13 +3984,13 @@ async function handleFindImage() {
                     Paste a recipe
                   </p>
                   <p style={{ fontSize: '13px', color: COLORS.inkFaint, marginBottom: '14px' }}>
-                    Paste a recipe URL and Claude will look it up and read it for you — if it can't find the page, copy the recipe text itself and paste it here instead.
+                    Paste a recipe URL — including a YouTube, TikTok, or Instagram link — and we'll look it up and read it for you. If it can't find enough there, copy the recipe text (or the video's caption) and paste it here instead.
                   </p>
                   <textarea
                     rows={8}
                     value={pastedText}
                     onChange={(e) => setPastedText(e.target.value)}
-                    placeholder="Paste a URL, or the recipe text itself…"
+                    placeholder="Paste a URL (including YouTube/TikTok/Instagram), or the recipe text itself…"
                     style={{ ...inputStyle(), resize: 'vertical', marginBottom: '14px', textAlign: 'left' }}
                   />
                   <button
@@ -3866,7 +4002,7 @@ async function handleFindImage() {
                       cursor: pastedText.trim() ? 'pointer' : 'default',
                     }}
                   >
-                    {looksLikeUrl(pastedText) ? 'Fetch & extract recipe' : 'Extract recipe'}
+                    {looksLikeVideoUrl(pastedText) ? 'Watch & extract recipe' : looksLikeUrl(pastedText) ? 'Fetch & extract recipe' : 'Extract recipe'}
                   </button>
                 </>
               ) : addMode === 'ingredients' ? (
@@ -3999,7 +4135,7 @@ async function handleFindImage() {
               )}
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', color: COLORS.ink }}>
                 <Loader2 size={18} className="animate-spin" />
-                <span style={{ fontSize: '14px' }}>{retryingSmaller ? 'That photo was a bit large — retrying with a smaller copy…' : generatingDish ? 'Writing up the recipe…' : generatingFromIngredients ? 'Inventing a recipe…' : generatingFromMealPhoto ? 'Working out the recipe…' : 'Reading the recipe…'}</span>
+                <span style={{ fontSize: '14px' }}>{retryingSmaller ? 'That photo was a bit large — retrying with a smaller copy…' : generatingDish ? 'Writing up the recipe…' : generatingFromIngredients ? 'Inventing a recipe…' : generatingFromMealPhoto ? 'Working out the recipe…' : extractingVideo ? 'Reading the video…' : 'Reading the recipe…'}</span>
               </div>
             </div>
           )}

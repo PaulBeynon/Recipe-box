@@ -1083,6 +1083,99 @@ Return strict JSON only — no markdown fences, no preamble, no commentary — i
   }
 }
 
+// Reverse-engineers a recipe from a photo of a finished, plated meal — the opposite
+// direction from generateRecipeFromIngredients (raw ingredients in, not the cooked
+// result). Identifies the dish, then works out a plausible way to actually make it.
+// Same multimodal request pattern as the other two image-based flows.
+async function generateRecipeFromMealPhoto(base64DataUrls) {
+  const prompt = `Look at the photo(s) of this cooked, plated meal and work out what dish it is (or your best reasonable guess if it's not a well-known dish). Then write a genuine, complete, practical recipe a home cook could follow to make it — proper quantities and clear steps, not a vague idea. Base it on how the dish is actually and typically made, using what's visible in the photo (main components, garnishes, sauces, apparent cooking method) as a guide, but fill in gaps with standard technique for that dish rather than leaving anything vague.
+
+Return strict JSON only — no markdown fences, no preamble, no commentary — in exactly this shape:
+{
+  "title": string,
+  "servings": string,
+  "time": string,  // total time, in a short standardized format like "15 min", "1 hr", or "1 hr 30 min" (use "hr"/"min", not "hours"/"minutes")
+  "ingredients": string[],  // include realistic quantities and units
+  "steps": string[],  // short, discrete steps — one clear action per step
+  "tags": string[]  // 2-5 short lowercase tags
+}`;
+
+  const imageBlocks = base64DataUrls.map((url) => ({
+    type: 'image',
+    source: { type: 'base64', media_type: 'image/jpeg', data: url.split(',')[1] },
+  }));
+
+  let response;
+  try {
+    const headers = await getAuthedHeaders();
+    response = await fetch(CLOUD_FUNCTION_URL, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 2000,
+        messages: [
+          {
+            role: 'user',
+            content: [...imageBlocks, { type: 'text', text: prompt }],
+          },
+        ],
+      }),
+    });
+  } catch (networkErr) {
+    if (String(networkErr?.message || '').startsWith('AUTH:')) throw networkErr;
+    throw new Error(`NETWORK: ${networkErr?.name || 'Error'} — ${networkErr?.message || 'no message'}`);
+  }
+
+  if (!response.ok) {
+    let detail = '';
+    try {
+      const errText = await response.text();
+      try {
+        const errBody = JSON.parse(errText);
+        detail = errBody?.error?.message || errText;
+      } catch {
+        detail = errText || `HTTP ${response.status}`;
+      }
+    } catch {
+      detail = `HTTP ${response.status}`;
+    }
+    throw new Error(`API: ${detail}`);
+  }
+
+  let rawText;
+  try {
+    rawText = await response.text();
+  } catch (readErr) {
+    throw new Error(`READ: ${readErr?.name || 'Error'} — ${readErr?.message || 'could not read response body'}`);
+  }
+
+  if (!rawText || rawText.length === 0) {
+    throw new Error(`PARSE: Response body was empty (status ${response.status}). This can happen if the photo(s) made the request too large — try again with a single, smaller photo.`);
+  }
+
+  let data;
+  try {
+    data = JSON.parse(rawText);
+  } catch {
+    throw new Error(`PARSE: Response body was not valid JSON (length ${rawText.length}) — ${rawText.slice(0, 200)}`);
+  }
+
+  const text2 = (data.content || []).map((b) => b.text || '').join('\n');
+  const clean2 = text2.replace(/```json|```/g, '').trim();
+  const firstBrace2 = clean2.indexOf('{');
+  const lastBrace2 = clean2.lastIndexOf('}');
+  if (firstBrace2 === -1 || lastBrace2 === -1 || lastBrace2 <= firstBrace2) {
+    throw new Error(`PARSE: No JSON object found in response: ${clean2.slice(0, 200)}`);
+  }
+  const jsonSlice2 = clean2.slice(firstBrace2, lastBrace2 + 1);
+  try {
+    return JSON.parse(jsonSlice2);
+  } catch (parseErr) {
+    throw new Error(`PARSE: ${parseErr.message} — raw: ${jsonSlice2.slice(0, 200)}`);
+  }
+}
+
 // ---------- small UI pieces ----------
 function getPlaceholder(tags) {
   const t = (tags || []).map((x) => x.toLowerCase());
@@ -1716,10 +1809,11 @@ export default function RecipeBox({ onSignOut }) {
   const [addStage, setAddStage] = useState('capture'); // capture | extracting | review
   const [retryingSmaller, setRetryingSmaller] = useState(false);
   const [generatingDish, setGeneratingDish] = useState(false);
-  const [addMode, setAddMode] = useState(null); // null (menu) | photo | paste | manual | ingredients
+  const [addMode, setAddMode] = useState(null); // null (menu) | photo | paste | manual | ingredients | meal
   const [pastedText, setPastedText] = useState('');
   const [ingredientsText, setIngredientsText] = useState('');
   const [generatingFromIngredients, setGeneratingFromIngredients] = useState(false);
+  const [generatingFromMealPhoto, setGeneratingFromMealPhoto] = useState(false);
   const [generatingSteps, setGeneratingSteps] = useState(false);
   const [pendingPhotos, setPendingPhotos] = useState([]); // [{full, thumb}]
   const [fetchedImageUrl, setFetchedImageUrl] = useState('');
@@ -2455,6 +2549,40 @@ export default function RecipeBox({ onSignOut }) {
     } finally {
       setRetryingSmaller(false);
       setGeneratingFromIngredients(false);
+    }
+  }
+
+  async function handleGenerateFromMealPhoto() {
+    if (pendingPhotos.length === 0) return;
+    setAddStage('extracting');
+    setRetryingSmaller(false);
+    setGeneratingFromMealPhoto(true);
+    try {
+      const extracted = await callWithImageShrinkRetries((imgs) => generateRecipeFromMealPhoto(imgs));
+      setForm({
+        title: extracted.title || '',
+        servings: extracted.servings || '',
+        time: extracted.time || '',
+        ingredients: (extracted.ingredients || []).join('\n'),
+        steps: (extracted.steps || []).join('\n'),
+        tags: (extracted.tags || []).join(', '),
+      });
+      // Unlike the ingredients flow, this photo IS a genuine photo of the finished dish,
+      // so keep it in pendingPhotos — it becomes the recipe's hero image on save.
+      setErrorMsg('Heads up: this recipe was worked out by Claude from the photo, rather than a real source — a good starting point, worth double-checking quantities and technique.');
+      setAddStage('review');
+    } catch (err) {
+      const msg = err?.message || '';
+      if (msg.startsWith('NETWORK')) setErrorMsg(`Network error: ${msg.replace('NETWORK: ', '')}`);
+      else if (msg.startsWith('API')) setErrorMsg(`API error: ${msg.replace('API: ', '')}`);
+      else if (msg.startsWith('READ')) setErrorMsg(`Couldn't read the API response: ${msg.replace('READ: ', '')}`);
+      else if (msg.startsWith('PARSE')) setErrorMsg(`Got a response but couldn't parse it as a recipe. ${msg.replace('PARSE: ', '')}`);
+      else setErrorMsg(`Something went wrong: ${msg || 'unknown error'}`);
+      setForm({ title: '', servings: '', time: '', ingredients: '', steps: '', tags: '' });
+      setAddStage('review');
+    } finally {
+      setRetryingSmaller(false);
+      setGeneratingFromMealPhoto(false);
     }
   }
 
@@ -3613,6 +3741,7 @@ async function handleFindImage() {
                   { mode: 'paste', icon: ExternalLink, title: 'From a URL or pasted text', desc: "Paste a link and Claude will look it up, or paste the recipe text itself." },
                   { mode: 'manual', icon: Pencil, title: 'Add your own recipe', desc: 'Type it in yourself — no AI involved.' },
                   { mode: 'ingredients', icon: Sparkles, title: 'From ingredients I have', desc: "Photograph or list what's in the fridge and Claude will invent something." },
+                  { mode: 'meal', icon: Utensils, title: 'From a photo of a meal', desc: "Snap a finished dish — in a restaurant, from a friend, wherever — and Claude will work out a recipe for it." },
                 ].map((opt) => (
                   <button
                     key={opt.mode}
@@ -3740,7 +3869,7 @@ async function handleFindImage() {
                     {looksLikeUrl(pastedText) ? 'Fetch & extract recipe' : 'Extract recipe'}
                   </button>
                 </>
-              ) : (
+              ) : addMode === 'ingredients' ? (
                 <>
                   <Sparkles size={30} color={COLORS.rust} style={{ marginBottom: '12px' }} />
                   <p style={{ fontFamily: 'Fraunces, serif', fontSize: '18px', color: COLORS.ink, marginBottom: '6px' }}>
@@ -3801,6 +3930,60 @@ async function handleFindImage() {
                     Generate a recipe
                   </button>
                 </>
+              ) : (
+                <>
+                  <Utensils size={30} color={COLORS.rust} style={{ marginBottom: '12px' }} />
+                  <p style={{ fontFamily: 'Fraunces, serif', fontSize: '18px', color: COLORS.ink, marginBottom: '6px' }}>
+                    From a photo of a meal
+                  </p>
+                  <p style={{ fontSize: '13px', color: COLORS.inkFaint, marginBottom: '18px' }}>
+                    Snap a finished, plated dish and Claude will work out what it is and how to make it. The photo becomes the recipe's picture.
+                  </p>
+
+                  {pendingPhotos.length > 0 && (
+                    <div style={{ display: 'flex', gap: '8px', justifyContent: 'center', marginBottom: '16px', flexWrap: 'wrap' }}>
+                      {pendingPhotos.map((p, i) => (
+                        <div key={i} style={{ position: 'relative' }}>
+                          <img src={p.thumb} alt="" style={{ width: '80px', height: '100px', objectFit: 'cover', borderRadius: '3px', boxShadow: '0 1px 4px rgba(0,0,0,0.25)' }} />
+                          <button
+                            onClick={() => setPendingPhotos((prev) => prev.filter((_, idx) => idx !== i))}
+                            style={{ position: 'absolute', top: '-6px', right: '-6px', background: COLORS.rust, color: COLORS.cream, border: 'none', borderRadius: '50%', width: '20px', height: '20px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}
+                          >
+                            <X size={12} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {pendingPhotos.length < 3 && (
+                    <button
+                      onClick={() => fileInputRef.current.click()}
+                      style={{
+                        background: pendingPhotos.length === 0 ? COLORS.rust : 'transparent',
+                        color: pendingPhotos.length === 0 ? COLORS.cream : COLORS.rust,
+                        border: pendingPhotos.length === 0 ? 'none' : `1px solid ${COLORS.rust}`,
+                        borderRadius: '3px', padding: '11px 22px', fontFamily: 'Inter, sans-serif', fontWeight: 600,
+                        fontSize: '14px', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '6px', marginRight: '8px',
+                      }}
+                    >
+                      {pendingPhotos.length === 0 ? <Camera size={16} /> : <ImagePlus size={16} />}
+                      {pendingPhotos.length === 0 ? 'Take or choose a photo' : 'Add another angle'}
+                    </button>
+                  )}
+
+                  {pendingPhotos.length > 0 && (
+                    <button
+                      onClick={handleGenerateFromMealPhoto}
+                      style={{
+                        background: COLORS.sage, color: COLORS.cream, border: 'none', borderRadius: '3px',
+                        padding: '11px 22px', fontFamily: 'Inter, sans-serif', fontWeight: 600, fontSize: '14px', cursor: 'pointer',
+                      }}
+                    >
+                      Work out the recipe
+                    </button>
+                  )}
+                </>
               )}
             </div>
           )}
@@ -3816,7 +3999,7 @@ async function handleFindImage() {
               )}
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', color: COLORS.ink }}>
                 <Loader2 size={18} className="animate-spin" />
-                <span style={{ fontSize: '14px' }}>{retryingSmaller ? 'That photo was a bit large — retrying with a smaller copy…' : generatingDish ? 'Writing up the recipe…' : generatingFromIngredients ? 'Inventing a recipe…' : 'Reading the recipe…'}</span>
+                <span style={{ fontSize: '14px' }}>{retryingSmaller ? 'That photo was a bit large — retrying with a smaller copy…' : generatingDish ? 'Writing up the recipe…' : generatingFromIngredients ? 'Inventing a recipe…' : generatingFromMealPhoto ? 'Working out the recipe…' : 'Reading the recipe…'}</span>
               </div>
             </div>
           )}

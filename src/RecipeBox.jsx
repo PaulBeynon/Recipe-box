@@ -1185,8 +1185,9 @@ Return strict JSON only — no markdown fences, no preamble, no commentary — i
 // direction from generateRecipeFromIngredients (raw ingredients in, not the cooked
 // result). Identifies the dish, then works out a plausible way to actually make it.
 // Same multimodal request pattern as the other two image-based flows.
-async function generateRecipeFromMealPhoto(base64DataUrls) {
-  const prompt = `Look at the photo(s) of this cooked, plated meal and work out what dish it is (or your best reasonable guess if it's not a well-known dish). Then write a genuine, complete, practical recipe a home cook could follow to make it — proper quantities and clear steps, not a vague idea. Base it on how the dish is actually and typically made, using what's visible in the photo (main components, garnishes, sauces, apparent cooking method) as a guide, but fill in gaps with standard technique for that dish rather than leaving anything vague.
+async function generateRecipeFromMealPhoto(base64DataUrls, context) {
+  const hasContext = context && context.trim().length > 0;
+  const prompt = `Look at the photo(s) of this cooked, plated meal and work out what dish it is (or your best reasonable guess if it's not a well-known dish).${hasContext ? ` The user has provided this context to help identify it correctly — trust it over your own guess where they conflict, since a photo alone can be ambiguous (e.g. a coffee cake can look like a chocolate cake): "${context.trim()}"` : ''} Then write a genuine, complete, practical recipe a home cook could follow to make it — proper quantities and clear steps, not a vague idea. Base it on how the dish is actually and typically made, using what's visible in the photo (main components, garnishes, sauces, apparent cooking method) as a guide, but fill in gaps with standard technique for that dish rather than leaving anything vague.
 
 Return strict JSON only — no markdown fences, no preamble, no commentary — in exactly this shape:
 {
@@ -1910,6 +1911,7 @@ export default function RecipeBox({ onSignOut }) {
   const [addMode, setAddMode] = useState(null); // null (menu) | photo | paste | manual | ingredients | meal
   const [pastedText, setPastedText] = useState('');
   const [ingredientsText, setIngredientsText] = useState('');
+  const [mealPhotoContext, setMealPhotoContext] = useState('');
   const [generatingFromIngredients, setGeneratingFromIngredients] = useState(false);
   const [generatingFromMealPhoto, setGeneratingFromMealPhoto] = useState(false);
   const [extractingVideo, setExtractingVideo] = useState(false);
@@ -2480,6 +2482,7 @@ export default function RecipeBox({ onSignOut }) {
     setAddMode(null);
     setPastedText('');
     setIngredientsText('');
+    setMealPhotoContext('');
     setPendingPhotos([]);
     setFetchedImageUrl('');
     setUrlExtractHadNoImage(false);
@@ -2694,7 +2697,7 @@ export default function RecipeBox({ onSignOut }) {
     setRetryingSmaller(false);
     setGeneratingFromMealPhoto(true);
     try {
-      const extracted = await callWithImageShrinkRetries((imgs) => generateRecipeFromMealPhoto(imgs));
+      const extracted = await callWithImageShrinkRetries((imgs) => generateRecipeFromMealPhoto(imgs, mealPhotoContext));
       setForm({
         title: extracted.title || '',
         servings: extracted.servings || '',
@@ -4154,6 +4157,16 @@ async function handleFindImage() {
                       {pendingPhotos.length === 0 ? <Camera size={16} /> : <ImagePlus size={16} />}
                       {pendingPhotos.length === 0 ? 'Take or choose a photo' : 'Add another angle'}
                     </button>
+                  )}
+
+                  {pendingPhotos.length > 0 && (
+                    <input
+                      type="text"
+                      value={mealPhotoContext}
+                      onChange={(e) => setMealPhotoContext(e.target.value)}
+                      placeholder="Optional: anything that helps identify it, e.g. &quot;this is a coffee cake, not chocolate&quot;"
+                      style={{ ...inputStyle(), marginBottom: '14px', textAlign: 'left' }}
+                    />
                   )}
 
                   {pendingPhotos.length > 0 && (

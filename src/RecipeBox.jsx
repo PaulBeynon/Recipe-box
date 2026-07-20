@@ -1276,6 +1276,18 @@ Return strict JSON only — no markdown fences, no preamble, no commentary — i
 }
 
 // ---------- small UI pieces ----------
+// Recipes with an uploaded hero photo used to store that same base64 image twice — once as
+// `image`, again as `images[0]` — so the gallery thumbnail strip could just skip index 0. That
+// doubled the storage cost of every photo, which is enough on its own to push a single food
+// photo over Firestore's 1MiB-per-document limit and make the save silently fail. `images` now
+// only holds photos *beyond* the hero; this reconstructs the "extra photos" list either way, so
+// recipes saved before this fix (where images[0] really is a duplicate of image) still render
+// correctly without a data migration.
+function getGalleryExtras(rec) {
+  if (!rec || !rec.images || !rec.images.length) return [];
+  return rec.images.filter((img) => img !== rec.image);
+}
+
 function getPlaceholder(tags) {
   const t = (tags || []).map((x) => x.toLowerCase());
   const has = (...words) => words.some((w) => t.some((tag) => tag.includes(w)));
@@ -2501,9 +2513,11 @@ export default function RecipeBox({ onSignOut }) {
     if (files.length === 0) return;
     try {
       const totalAfter = pendingPhotos.length + files.length;
-      // Share a fixed overall payload budget across however many photos will be in
-      // play, so multi-photo captures don't quietly add up past the sandbox's limit.
-      const perPhotoBudget = Math.max(150000, Math.min(650000, Math.floor(1400000 / totalAfter)));
+      // Share a fixed overall payload budget across however many photos will be in play. This
+      // now needs to fit comfortably under Firestore's 1,048,576-byte hard limit per document
+      // (the recipe's ingredients/steps/etc text needs headroom too), not just the old artifact
+      // sandbox's request-size limit this was originally tuned for.
+      const perPhotoBudget = Math.max(100000, Math.min(650000, Math.floor(850000 / totalAfter)));
       const resized = await Promise.all(
         files.map((file) =>
           Promise.all([
@@ -2774,7 +2788,7 @@ export default function RecipeBox({ onSignOut }) {
       const current = JSON.parse(stored.value);
       if (current.image) return; // already has a photo by now — don't overwrite it
 
-      const updated = { ...current, image: result.imageUrl, images: current.images?.length ? current.images : [result.imageUrl] };
+      const updated = { ...current, image: result.imageUrl };
       await window.storage.set(`recipe-full:${id}`, JSON.stringify(updated), false);
 
       const idxSnap = await window.storage.get('recipe-index', false).catch(() => null);
@@ -2807,6 +2821,11 @@ export default function RecipeBox({ onSignOut }) {
     // rather than a downloaded copy (the app can't fetch external image bytes from the browser)
     const mainImage = images[0] || (pendingPhotos.length === 0 ? fetchedImageUrl : null) || null;
     const thumb = pendingPhotos[0]?.thumb || (pendingPhotos.length === 0 ? fetchedImageUrl : null) || null;
+    // Extra photos beyond the hero (multi-photo captures only) — deliberately NOT including
+    // the hero itself here. Storing the same base64 photo twice (once as `image`, again as
+    // `images[0]`) was pushing single-photo food imports over Firestore's 1MiB document limit
+    // and causing the save to silently fail. See getGalleryExtras for how this reconstructs on read.
+    const extraImages = images.length > 1 ? images.slice(1) : [];
 
     const fullData = {
       id,
@@ -2817,7 +2836,7 @@ export default function RecipeBox({ onSignOut }) {
       steps: stepsArr,
       tags: tagsArr,
       image: mainImage,
-      images: images.length ? images : (mainImage ? [mainImage] : []),
+      images: extraImages,
       notes: '',
       rating: 0,
       createdAt: Date.now(),
@@ -4298,9 +4317,9 @@ async function handleFindImage() {
                 onLoadError={handleImageLoadError}
                 onOpenGallery={detail.image ? () => setGalleryIndex(0) : undefined}
               />
-              {detail.images && detail.images.length > 1 && (
+              {getGalleryExtras(detail).length > 0 && (
                 <div style={{ display: 'flex', gap: '6px', marginBottom: '14px' }}>
-                  {detail.images.slice(1).map((img, i) => (
+                  {getGalleryExtras(detail).map((img, i) => (
                     <img
                       key={i}
                       src={img}
@@ -4691,7 +4710,7 @@ async function handleFindImage() {
       )}
 
       {galleryIndex !== null && detail && (() => {
-        const galleryImages = detail.images && detail.images.length ? detail.images : (detail.image ? [detail.image] : []);
+        const galleryImages = detail.image ? [detail.image, ...getGalleryExtras(detail)] : getGalleryExtras(detail);
         if (galleryImages.length === 0) return null;
         return (
           <PhotoLightbox

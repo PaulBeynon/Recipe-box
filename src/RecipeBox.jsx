@@ -911,7 +911,14 @@ Return exactly this shape:
 }
 
 async function analyzeNoteForChanges(note, ingredients, steps) {
-  const prompt = `A user just saved a note on a recipe after cooking it. Decide whether the note implies a concrete, specific change to a particular ingredient amount or a particular step's text — for example "more garlic", "needed to boil longer", "too salty", "add 5 more minutes in the oven". Do NOT suggest anything for vague, subjective, or purely positive/negative notes that don't specify what to change ("loved it", "kids didn't like it", "will make again").
+  const prompt = `A user just saved a note on a recipe after cooking it. Decide whether the note implies a concrete, specific change to a particular ingredient or a particular step's text. This includes:
+- an amount/quantity change ("more garlic", "add 5 more minutes in the oven")
+- a technique or timing change ("needed to boil longer", "too salty")
+- an ingredient substitution or rename ("use mince beef instead of ground beef", "swap the ketchup for bbq sauce", "I used turkey instead of chicken")
+
+For a substitution/rename, check BOTH the ingredients list and the steps for every line that mentions the old ingredient — if the same ingredient is named in a step as well as its own ingredient line, suggest a change for each affected line, not just the ingredient line.
+
+Do NOT suggest anything for vague, subjective, or purely positive/negative notes that don't specify what to change ("loved it", "kids didn't like it", "will make again").
 
 Current ingredients (0-indexed):
 ${ingredients.map((ing, i) => `${i}: ${ing}`).join('\n') || '(none)'}
@@ -933,7 +940,7 @@ Return strict JSON only — no markdown fences, no preamble, no commentary — i
     }
   ]
 }
-Rules: only include an entry if the note clearly implies that specific change. "suggested" must be the full replacement line, written in the same format/style as "current" (same units, same sentence structure), just adjusted. "reason" is one short clause explaining why, referencing the note. If nothing concrete is implied, return {"suggestions": []}. Prefer zero suggestions over a speculative one.`;
+Rules: only include an entry for a line that actually needs to change because of what the note says. "suggested" must be the full replacement line, written in the same format/style as "current" (same units, same sentence structure), just adjusted — for a substitution, replace the specific ingredient mention but leave the rest of the line's wording alone. "reason" is one short clause explaining why, referencing the note. If nothing concrete is implied, return {"suggestions": []}. Prefer zero suggestions over a speculative one, but don't skip a real, clearly-implied change just because it's a substitution rather than a quantity.`;
 
   const data = await postToClaudeWithRetry({
     model: 'claude-sonnet-4-6',

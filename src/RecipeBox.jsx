@@ -2753,6 +2753,47 @@ export default function RecipeBox({ onSignOut }) {
     }
   }
 
+  // Runs the same photo lookup as the "Find a photo online" button, but automatically right
+  // after a recipe is saved with no photo — so there's no separate manual step to remember.
+  // Fire-and-forget: the save itself already completed and navigated away, so this just
+  // enriches the recipe in place once (if) a suitable photo turns up. Re-reads from storage
+  // rather than trusting anything captured in memory, since by the time this resolves the
+  // user may have edited, added their own photo, or even deleted the recipe.
+  async function autoFindPhotoForRecipe(id, title, tags) {
+    try {
+      const result = await findRecipePhoto(title, tags || []);
+      if (!result || !result.imageUrl) return;
+      const loads = await urlLoadsAsImage(result.imageUrl);
+      if (!loads) return;
+
+      const stored = await window.storage.get(`recipe-full:${id}`, false).catch(() => null);
+      if (!stored) return; // deleted, or never actually persisted
+      const current = JSON.parse(stored.value);
+      if (current.image) return; // already has a photo by now — don't overwrite it
+
+      const updated = { ...current, image: result.imageUrl, images: current.images?.length ? current.images : [result.imageUrl] };
+      await window.storage.set(`recipe-full:${id}`, JSON.stringify(updated), false);
+
+      const idxSnap = await window.storage.get('recipe-index', false).catch(() => null);
+      if (idxSnap) {
+        try {
+          const idxArr = JSON.parse(idxSnap.value);
+          const newIdxArr = idxArr.map((r) => (r.id === id ? { ...r, thumbnail: result.imageUrl } : r));
+          await window.storage.set('recipe-index', JSON.stringify(newIdxArr), false);
+        } catch {
+          // index read/parse failed — the recipe itself is still saved with its photo above,
+          // just skip the in-memory/grid refresh below rather than risk writing bad data.
+          return;
+        }
+      }
+      setIndex((prev) => prev.map((r) => (r.id === id ? { ...r, thumbnail: result.imageUrl } : r)));
+      // If the user is currently looking at this exact recipe's detail screen, refresh it live.
+      setDetail((prev) => (prev && prev.id === id ? { ...prev, image: result.imageUrl, images: updated.images } : prev));
+    } catch (err) {
+      console.warn('autoFindPhotoForRecipe failed:', err);
+    }
+  }
+
   async function handleSaveRecipe() {
     const id = uid();
     const ingredientsArr = form.ingredients.split('\n').map((s) => s.trim()).filter(Boolean);
@@ -2792,6 +2833,13 @@ export default function RecipeBox({ onSignOut }) {
         createdAt: fullData.createdAt,
       };
       await persistIndex([newEntry, ...index]);
+      // No photo came in with the import (no upload, no hero image found on the source page/
+      // video) — look for one automatically now instead of leaving a placeholder until someone
+      // opens the recipe and clicks "Find a photo online". Deliberately not awaited: the save
+      // itself is done, so don't make the user wait on a search that might take a few seconds.
+      if (!mainImage) {
+        autoFindPhotoForRecipe(id, fullData.title, tagsArr);
+      }
       resetAddFlow();
       setView('grid');
     } catch {

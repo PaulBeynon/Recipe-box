@@ -51,7 +51,7 @@ function SignInScreen({
     }}>
       <ChefHat size={40} color={COLORS.rust} style={{ marginBottom: '14px' }} />
       <h1 style={{ fontFamily: 'Fraunces, serif', fontWeight: 700, fontSize: '26px', color: COLORS.ink, margin: '0 0 8px' }}>
-        The Recipe Box
+        Recipeasypeasy
       </h1>
       <p style={{ color: COLORS.inkFaint, fontSize: '14px', marginBottom: '26px', maxWidth: '320px' }}>
         Sign in to see your own recipes, shopping list, and meal plan. Nobody else can see your library.

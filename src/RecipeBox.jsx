@@ -3474,6 +3474,7 @@ async function handleFindImage() {
       {/* Header */}
       {view !== 'cook' && (
         <div style={{ background: COLORS.ink, padding: '20px 16px 16px' }}>
+          <div style={{ maxWidth: '840px', margin: '0 auto' }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
               <ChefHat size={22} color={COLORS.mustard} />
@@ -3663,12 +3664,13 @@ async function handleFindImage() {
               )}
             </>
           )}
+          </div>
         </div>
       )}
 
       {/* GRID VIEW */}
       {view === 'grid' && (
-        <div style={{ padding: '16px' }}>
+        <div style={{ padding: '16px', maxWidth: '840px', margin: '0 auto' }}>
           {loadingIndex ? (
             <div style={{ display: 'flex', justifyContent: 'center', padding: '60px 0', color: COLORS.inkFaint }}>
               <Loader2 size={22} className="animate-spin" />
@@ -3684,7 +3686,7 @@ async function handleFindImage() {
               </p>
             </div>
           ) : (
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: '12px' }}>
               {sorted.map((entry) => (
                 <div key={entry.id} style={{ position: 'relative' }}>
                   <RecipeCard

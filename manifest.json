@@ -1,6 +1,6 @@
 {
-  "name": "The Recipe Box",
-  "short_name": "Recipe Box",
+  "name": "Recipeasypeasy",
+  "short_name": "Recipeasypeasy",
   "start_url": "./index.html",
   "display": "standalone",
   "background_color": "#FAF3E4",

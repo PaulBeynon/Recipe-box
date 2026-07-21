@@ -3374,12 +3374,12 @@ async function handleFindImage() {
       try {
         parsed = JSON.parse(reader.result);
       } catch {
-        setImportToast({ type: 'error', text: 'Could not read that file — is it a Recipe Box backup?' });
+        setImportToast({ type: 'error', text: 'Could not read that file — is it a Recipeasypeasy backup?' });
         setTimeout(() => setImportToast(null), 3500);
         return;
       }
       if (!Array.isArray(parsed)) {
-        setImportToast({ type: 'error', text: 'That file doesn\u2019t look like a Recipe Box backup.' });
+        setImportToast({ type: 'error', text: 'That file doesn\u2019t look like a Recipeasypeasy backup.' });
         setTimeout(() => setImportToast(null), 3500);
         return;
       }
@@ -3478,7 +3478,7 @@ async function handleFindImage() {
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
               <ChefHat size={22} color={COLORS.mustard} />
               <h1 style={{ fontFamily: 'Fraunces, serif', fontWeight: 700, fontSize: '22px', color: COLORS.cream, margin: 0, letterSpacing: '0.01em' }}>
-                The Recipe Box
+                Recipeasypeasy
               </h1>
             </div>
             {view === 'grid' && index.length > 0 && !selectMode && (
@@ -3612,7 +3612,7 @@ async function handleFindImage() {
                             }}
                           >
                             {alreadyAdded ? <Check size={12} /> : <Plus size={12} />}
-                            {alreadyAdded ? 'Already in your Recipe Box' : 'Add to Recipe Box'}
+                            {alreadyAdded ? 'Already in your Recipeasypeasy' : 'Add to Recipeasypeasy'}
                           </button>
                         );
                       })()}

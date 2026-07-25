@@ -3865,9 +3865,9 @@ async function handleFindImage() {
             <button
               onClick={() => { resetAddFlow(); setView('add'); }}
               style={{
-                position: 'fixed', bottom: '24px', right: '20px', width: '54px', height: '54px', borderRadius: '50%',
+                position: 'fixed', bottom: 'calc(24px + env(safe-area-inset-bottom))', right: '20px', width: '54px', height: '54px', borderRadius: '50%',
                 background: COLORS.rust, color: COLORS.cream, border: 'none', boxShadow: '0 3px 10px rgba(0,0,0,0.3)',
-                display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
+                display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', zIndex: 20,
               }}
             >
               <Plus size={26} />

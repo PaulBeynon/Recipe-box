@@ -4,7 +4,7 @@ import {
   AlertCircle, Pencil, Download, Minus, Utensils, ImagePlus, Check,
   Cookie, Fish, Beef, Salad, Soup, Pizza, Croissant, Egg, Wine, BookOpen, LayoutGrid, Star, Clock,
   ShoppingCart, CheckSquare, Square, ListPlus, Sparkles, Play, Pause, RotateCcw, Calendar, Copy, ExternalLink,
-  Upload, Globe, Leaf, LogOut, Mic, MicOff,
+  Upload, Globe, Leaf, LogOut, Mic, MicOff, Layers,
 } from 'lucide-react';
 import { CLOUD_FUNCTION_URL, FETCH_PAGE_IMAGE_URL, EXTRACT_VIDEO_TEXT_URL, auth } from './firebase-init';
 
@@ -1033,6 +1033,48 @@ Return strict JSON only — no markdown fences, no preamble, no commentary — i
   const lastBrace3 = clean.lastIndexOf('}');
   if (firstBrace3 === -1 || lastBrace3 === -1) throw new Error('No JSON found');
   return JSON.parse(clean.slice(firstBrace3, lastBrace3 + 1));
+}
+
+// Combines several recipes into a single, time-optimized cooking sequence, so the person can
+// cook a whole meal from one running list of steps instead of flipping between recipes and
+// guessing when to start each one. Each merged step is tagged with which dish it belongs to
+// (e.g. "[Rice] ...") so Cook Mode's plain step-text rendering shows it with no UI changes needed,
+// and any cook/rest/wait durations are kept as explicit "X minutes"-style phrasing so the existing
+// step-timer parser (parseStepTimer) keeps working on the merged steps exactly like it does today.
+async function mergeStepsForMeal(recipes) {
+  const listing = recipes
+    .map((r, i) => `Recipe ${i + 1}: "${r.title}"${r.servings ? ` (serves ${r.servings})` : ''}\nIngredients:\n${(r.ingredients || []).map((ing) => `- ${ing}`).join('\n') || '(none listed)'}\nSteps:\n${(r.steps || []).map((s, si) => `${si + 1}. ${s}`).join('\n') || '(none listed)'}`)
+    .join('\n\n');
+
+  const prompt = `A home cook wants to make all of these dishes as one meal, at the same time, without switching back and forth between separate recipes. Merge their steps into a single ordered cooking sequence that gets everything ready and hot at roughly the same time.
+
+${listing}
+
+Interleave the steps sensibly: start whatever takes longest first, use waiting/cooking/resting time in one dish to do active prep on another, and group truly simultaneous quick actions together rather than listing them one dish at a time. Combine genuinely identical shared actions (e.g. both recipes needing the oven preheated to the same temperature) into a single step rather than repeating it. Every original step's content must still be covered somewhere in the sequence — don't drop steps, just reorder and interleave them.
+
+Each merged step's text must start with the dish name in square brackets, e.g. "[Sticky Rice] Rinse the rice..." — if a step genuinely serves two dishes at once (e.g. a shared oven preheat), tag it with both names like "[Rice + Curry]". Keep any cook/rest/wait durations from the original steps written out explicitly with a number and unit (e.g. "simmer for 12 minutes", "rest for 5 mins", "bake for 25 minutes") exactly as such phrasing — this is important, don't paraphrase a time away or drop it. Keep each step concise and actionable, one clear action per step, in UK English.
+
+Return strict JSON only — no markdown fences, no preamble, no commentary — in exactly this shape:
+{
+  "mealTitle": string,  // short combined name, e.g. "Sticky Rice with Thai Green Curry"
+  "steps": string[]
+}`;
+
+  const data = await postToClaudeWithRetry({
+    model: 'claude-sonnet-4-6',
+    max_tokens: 3000,
+    messages: [{ role: 'user', content: prompt }],
+  });
+
+  const text = (data.content || []).map((b) => b.text || '').join('\n');
+  const clean = text.replace(/```json|```/g, '').trim();
+  const firstBrace = clean.indexOf('{');
+  const lastBrace = clean.lastIndexOf('}');
+  if (firstBrace === -1 || lastBrace === -1) throw new Error('No JSON found');
+  const parsed = JSON.parse(clean.slice(firstBrace, lastBrace + 1));
+  const steps = Array.isArray(parsed.steps) ? parsed.steps.filter(Boolean) : [];
+  if (steps.length === 0) throw new Error('No merged steps were returned');
+  return { mealTitle: parsed.mealTitle || recipes.map((r) => r.title).join(' + '), steps };
 }
 
 async function mergeIngredientsForShoppingList(groups) {
@@ -2152,6 +2194,14 @@ export default function RecipeBox({ onSignOut }) {
   const [loadingShoppingList, setLoadingShoppingList] = useState(true);
   const [selectMode, setSelectMode] = useState(false);
   const [selectedRecipeIds, setSelectedRecipeIds] = useState([]);
+
+  // "Make a meal" — combine multiple recipes into one interleaved cook-mode sequence
+  const [mealMode, setMealMode] = useState(false);
+  const [mealSelectedIds, setMealSelectedIds] = useState([]);
+  const [mealMerging, setMealMerging] = useState(false);
+  const [mealError, setMealError] = useState('');
+  const [isMealCook, setIsMealCook] = useState(false);
+
   const [newItemText, setNewItemText] = useState('');
   const [listCopied, setListCopied] = useState(false);
   const [copyFallbackText, setCopyFallbackText] = useState(null);
@@ -2452,6 +2502,22 @@ export default function RecipeBox({ onSignOut }) {
   function toggleSelectMode() {
     setSelectMode((s) => !s);
     setSelectedRecipeIds([]);
+    setMealMode(false);
+    setMealSelectedIds([]);
+    setMealError('');
+  }
+
+  function toggleMealMode() {
+    setMealMode((m) => !m);
+    setMealSelectedIds([]);
+    setMealError('');
+    setSelectMode(false);
+    setSelectedRecipeIds([]);
+  }
+
+  function toggleMealRecipeSelected(id) {
+    setMealSelectedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+    setMealError('');
   }
 
   function toggleRecipeSelected(id) {
@@ -3332,7 +3398,62 @@ async function handleFindImage() {
     }
     if ('speechSynthesis' in window) window.speechSynthesis.cancel();
     setTimerRunning(false);
-    setView('detail');
+    if (isMealCook) {
+      setIsMealCook(false);
+      setDetail(null);
+      setView('grid');
+    } else {
+      setView('detail');
+    }
+  }
+
+  // Loads the selected recipes' full data, asks Claude to interleave their steps into one
+  // sequence (see mergeStepsForMeal), merges their ingredients the same way the shopping-list
+  // merge already does, then drops the result straight into the existing Cook Mode — reusing all
+  // of its timer parsing, ingredient chips, and voice control with no separate UI to maintain.
+  async function startMealCook() {
+    if (mealSelectedIds.length < 2) {
+      setMealError('Pick at least 2 recipes to combine.');
+      return;
+    }
+    setMealMerging(true);
+    setMealError('');
+    try {
+      const recipes = [];
+      for (const id of mealSelectedIds) {
+        const r = await window.storage.get(`recipe-full:${id}`, false).catch(() => null);
+        if (r) recipes.push(JSON.parse(r.value));
+      }
+      if (recipes.length < 2) throw new Error('Could not load those recipes.');
+
+      const [{ mealTitle, steps }, mergedIngredients] = await Promise.all([
+        mergeStepsForMeal(recipes),
+        mergeIngredientsForShoppingList(recipes.map((r) => ({ recipeTitle: r.title, ingredients: r.ingredients }))).catch(
+          () => recipes.flatMap((r) => r.ingredients || [])
+        ),
+      ]);
+
+      const mealDetail = {
+        id: `meal-${Date.now()}`,
+        title: mealTitle,
+        servings: recipes.map((r) => r.servings).filter(Boolean).join(' / '),
+        time: '',
+        ingredients: mergedIngredients,
+        steps,
+        tags: ['combined meal'],
+        sourceRecipes: recipes.map((r) => r.title),
+      };
+
+      setDetail(mealDetail);
+      setIsMealCook(true);
+      setMealMode(false);
+      setMealSelectedIds([]);
+      await enterCookMode();
+    } catch (err) {
+      setMealError(err?.message || 'Could not combine those recipes. Please try again.');
+    } finally {
+      setMealMerging(false);
+    }
   }
 
   async function exportLibrary() {
@@ -3482,7 +3603,7 @@ async function handleFindImage() {
                 Recipeasypeasy
               </h1>
             </div>
-            {view === 'grid' && index.length > 0 && !selectMode && (
+            {view === 'grid' && index.length > 0 && !selectMode && !mealMode && (
               <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
                 <button
                   onClick={() => setView('shopping')}
@@ -3506,6 +3627,13 @@ async function handleFindImage() {
                   style={{ background: 'none', border: 'none', color: COLORS.cream, opacity: 0.75, cursor: 'pointer', padding: '4px' }}
                 >
                   <ListPlus size={21} />
+                </button>
+                <button
+                  onClick={toggleMealMode}
+                  title="Make a meal from multiple recipes"
+                  style={{ background: 'none', border: 'none', color: COLORS.cream, opacity: 0.75, cursor: 'pointer', padding: '4px' }}
+                >
+                  <Layers size={21} />
                 </button>
                 <button
                   onClick={() => setView('planner')}
@@ -3563,13 +3691,26 @@ async function handleFindImage() {
                 Cancel
               </button>
             )}
+            {view === 'grid' && mealMode && (
+              <button
+                onClick={toggleMealMode}
+                style={{ background: 'none', border: 'none', color: COLORS.cream, opacity: 0.85, cursor: 'pointer', padding: '4px', fontSize: '13px', fontWeight: 600 }}
+              >
+                Cancel
+              </button>
+            )}
           </div>
           {view === 'grid' && selectMode && (
             <div style={{ color: COLORS.cream, opacity: 0.7, fontSize: '12.5px', marginBottom: '2px' }}>
               Tap recipes to add their ingredients to your shopping list
             </div>
           )}
-          {view === 'grid' && !selectMode && (
+          {view === 'grid' && mealMode && (
+            <div style={{ color: COLORS.cream, opacity: 0.7, fontSize: '12.5px', marginBottom: '2px' }}>
+              Tap 2 or more recipes to combine into one meal
+            </div>
+          )}
+          {view === 'grid' && !selectMode && !mealMode && (
             <>
               {!nationalDishDismissed && (
                 <div style={{
@@ -3691,7 +3832,7 @@ async function handleFindImage() {
                 <div key={entry.id} style={{ position: 'relative' }}>
                   <RecipeCard
                     entry={entry}
-                    onClick={() => (selectMode ? toggleRecipeSelected(entry.id) : openDetail(entry.id))}
+                    onClick={() => (selectMode ? toggleRecipeSelected(entry.id) : mealMode ? toggleMealRecipeSelected(entry.id) : openDetail(entry.id))}
                   />
                   {selectMode && (
                     <div
@@ -3705,12 +3846,24 @@ async function handleFindImage() {
                       {selectedRecipeIds.includes(entry.id) && <Check size={15} color={COLORS.cream} />}
                     </div>
                   )}
+                  {mealMode && (
+                    <div
+                      style={{
+                        position: 'absolute', top: '6px', right: '6px', width: '24px', height: '24px', borderRadius: '5px',
+                        background: mealSelectedIds.includes(entry.id) ? COLORS.rust : 'rgba(255,253,248,0.9)',
+                        border: `1.5px solid ${mealSelectedIds.includes(entry.id) ? COLORS.rust : COLORS.cardBorder}`,
+                        display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', pointerEvents: 'none',
+                      }}
+                    >
+                      {mealSelectedIds.includes(entry.id) && <Check size={15} color={COLORS.cream} />}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
           )}
 
-          {!selectMode && (
+          {!selectMode && !mealMode && (
             <button
               onClick={() => { resetAddFlow(); setView('add'); }}
               style={{
@@ -3735,6 +3888,34 @@ async function handleFindImage() {
             >
               <ShoppingCart size={17} /> Add {selectedRecipeIds.length} recipe{selectedRecipeIds.length > 1 ? 's' : ''} to shopping list
             </button>
+          )}
+
+          {mealMode && (
+            <div style={{ position: 'fixed', bottom: '20px', left: '16px', right: '16px' }}>
+              {mealError && (
+                <div style={{ background: COLORS.cream, border: `1px solid ${COLORS.rust}`, borderRadius: '4px', padding: '10px 12px', marginBottom: '8px', fontSize: '13px', color: COLORS.rust, textAlign: 'center' }}>
+                  {mealError}
+                </div>
+              )}
+              {mealSelectedIds.length > 0 && (
+                <button
+                  onClick={mealMerging ? undefined : startMealCook}
+                  aria-disabled={mealMerging}
+                  style={{
+                    width: '100%', background: COLORS.rust, color: COLORS.cream,
+                    border: 'none', borderRadius: '4px', padding: '14px', fontFamily: 'Inter, sans-serif', fontWeight: 600,
+                    fontSize: '15px', cursor: mealMerging ? 'default' : 'pointer', boxShadow: '0 3px 10px rgba(0,0,0,0.3)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', opacity: mealMerging ? 0.7 : 1,
+                  }}
+                >
+                  {mealMerging ? (
+                    <><Loader2 size={17} className="animate-spin" /> Combining steps…</>
+                  ) : (
+                    <><Layers size={17} /> Combine {mealSelectedIds.length} recipe{mealSelectedIds.length > 1 ? 's' : ''} into a meal</>
+                  )}
+                </button>
+              )}
+            </div>
           )}
         </div>
       )}
@@ -4821,7 +5002,7 @@ async function handleFindImage() {
       {/* COOK MODE */}
       {view === 'cook' && detail && (
         <div style={{ minHeight: '100vh', background: COLORS.ink, display: 'flex', flexDirection: 'column' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px', paddingBottom: isMealCook ? '2px' : '16px' }}>
             <span style={{ color: COLORS.cream, opacity: 0.7, fontSize: '13px' }}>
               Step {cookStepIndex + 1} of {detail.steps.length}
             </span>
@@ -4838,6 +5019,15 @@ async function handleFindImage() {
               </button>
             </div>
           </div>
+          {isMealCook && (
+            <div style={{ padding: '0 16px 14px', textAlign: 'center' }}>
+              <p style={{ color: COLORS.mustard, opacity: 0.9, fontSize: '13px', fontWeight: 600, margin: 0 }}>
+                <Layers size={12} style={{ verticalAlign: '-1px', marginRight: '5px' }} />
+                Combined meal: {detail.title}
+              </p>
+            </div>
+          )}
+
 
           {voiceMode && (
             <div style={{ padding: '0 16px 14px', textAlign: 'center' }}>

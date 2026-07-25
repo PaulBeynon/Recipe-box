@@ -1046,23 +1046,24 @@ async function mergeStepsForMeal(recipes) {
     .map((r, i) => `Recipe ${i + 1}: "${r.title}"${r.servings ? ` (serves ${r.servings})` : ''}\nIngredients:\n${(r.ingredients || []).map((ing) => `- ${ing}`).join('\n') || '(none listed)'}\nSteps:\n${(r.steps || []).map((s, si) => `${si + 1}. ${s}`).join('\n') || '(none listed)'}`)
     .join('\n\n');
 
-  const prompt = `A home cook wants to make all of these dishes as one meal, at the same time, without switching back and forth between separate recipes. Merge their steps into a single ordered cooking sequence that gets everything ready and hot at roughly the same time.
+  const prompt = `A home cook wants to make all of these dishes as one meal, at the same time, without switching back and forth between separate recipes. Merge their steps into a single ordered cooking sequence that gets everything ready and hot at roughly the same time, and also consolidate their ingredient lists into one shopping-ready list.
 
 ${listing}
 
-Interleave the steps sensibly: start whatever takes longest first, use waiting/cooking/resting time in one dish to do active prep on another, and group truly simultaneous quick actions together rather than listing them one dish at a time. Combine genuinely identical shared actions (e.g. both recipes needing the oven preheated to the same temperature) into a single step rather than repeating it. Every original step's content must still be covered somewhere in the sequence — don't drop steps, just reorder and interleave them.
+For the steps: interleave them sensibly — start whatever takes longest first, use waiting/cooking/resting time in one dish to do active prep on another, and group truly simultaneous quick actions together rather than listing them one dish at a time. Combine genuinely identical shared actions (e.g. both recipes needing the oven preheated to the same temperature) into a single step rather than repeating it. Every original step's content must still be covered somewhere in the sequence — don't drop steps, just reorder and interleave them. Each merged step's text must start with the dish name in square brackets, e.g. "[Sticky Rice] Rinse the rice..." — if a step genuinely serves two dishes at once (e.g. a shared oven preheat), tag it with both names like "[Rice + Curry]". Keep any cook/rest/wait durations from the original steps written out explicitly with a number and unit (e.g. "simmer for 12 minutes", "rest for 5 mins", "bake for 25 minutes") exactly as such phrasing — this is important, don't paraphrase a time away or drop it. Keep each step concise and actionable, one clear action per step, in UK English.
 
-Each merged step's text must start with the dish name in square brackets, e.g. "[Sticky Rice] Rinse the rice..." — if a step genuinely serves two dishes at once (e.g. a shared oven preheat), tag it with both names like "[Rice + Curry]". Keep any cook/rest/wait durations from the original steps written out explicitly with a number and unit (e.g. "simmer for 12 minutes", "rest for 5 mins", "bake for 25 minutes") exactly as such phrasing — this is important, don't paraphrase a time away or drop it. Keep each step concise and actionable, one clear action per step, in UK English.
+For the ingredients: combine all the recipes' ingredient lists into one consolidated list. When the same ingredient appears in more than one recipe, sum the quantities into one line, e.g. "1 garlic clove" + "2 garlic cloves" becomes "3 garlic cloves". Only merge items that are clearly the same ingredient with matching or directly convertible units; if the match is unclear or the units aren't compatible, keep them as separate lines rather than guessing. Ingredients with no quantity (e.g. "salt to taste") should appear only once even if repeated. Keep the wording natural, concise, and in a similar style to the originals.
 
 Return strict JSON only — no markdown fences, no preamble, no commentary — in exactly this shape:
 {
   "mealTitle": string,  // short combined name, e.g. "Sticky Rice with Thai Green Curry"
-  "steps": string[]
+  "steps": string[],
+  "ingredients": string[]
 }`;
 
   const data = await postToClaudeWithRetry({
     model: 'claude-sonnet-4-6',
-    max_tokens: 3000,
+    max_tokens: 3500,
     messages: [{ role: 'user', content: prompt }],
   });
 
@@ -1074,8 +1075,10 @@ Return strict JSON only — no markdown fences, no preamble, no commentary — i
   const parsed = JSON.parse(clean.slice(firstBrace, lastBrace + 1));
   const steps = Array.isArray(parsed.steps) ? parsed.steps.filter(Boolean) : [];
   if (steps.length === 0) throw new Error('No merged steps were returned');
-  return { mealTitle: parsed.mealTitle || recipes.map((r) => r.title).join(' + '), steps };
+  const ingredients = Array.isArray(parsed.ingredients) ? parsed.ingredients.filter(Boolean) : recipes.flatMap((r) => r.ingredients || []);
+  return { mealTitle: parsed.mealTitle || recipes.map((r) => r.title).join(' + '), steps, ingredients };
 }
+
 
 async function mergeIngredientsForShoppingList(groups) {
   const listing = groups
@@ -3426,19 +3429,14 @@ async function handleFindImage() {
       }
       if (recipes.length < 2) throw new Error('Could not load those recipes.');
 
-      const [{ mealTitle, steps }, mergedIngredients] = await Promise.all([
-        mergeStepsForMeal(recipes),
-        mergeIngredientsForShoppingList(recipes.map((r) => ({ recipeTitle: r.title, ingredients: r.ingredients }))).catch(
-          () => recipes.flatMap((r) => r.ingredients || [])
-        ),
-      ]);
+      const { mealTitle, steps, ingredients } = await mergeStepsForMeal(recipes);
 
       const mealDetail = {
         id: `meal-${Date.now()}`,
         title: mealTitle,
         servings: recipes.map((r) => r.servings).filter(Boolean).join(' / '),
         time: '',
-        ingredients: mergedIngredients,
+        ingredients,
         steps,
         tags: ['combined meal'],
         sourceRecipes: recipes.map((r) => r.title),

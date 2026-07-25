@@ -2523,6 +2523,18 @@ export default function RecipeBox({ onSignOut }) {
     setMealError('');
   }
 
+  // Entry point from an individual recipe's detail page: pre-selects that recipe and drops
+  // into the grid's "make a meal" picker so the person just needs to tap the second (or third...)
+  // dish to combine with, rather than starting the selection from scratch.
+  function startMealFrom(id) {
+    setMealMode(true);
+    setMealSelectedIds([id]);
+    setMealError('');
+    setSelectMode(false);
+    setSelectedRecipeIds([]);
+    setView('grid');
+  }
+
   function toggleRecipeSelected(id) {
     setSelectedRecipeIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   }
@@ -4780,9 +4792,18 @@ async function handleFindImage() {
               {detail.steps.length > 0 && (
                 <button
                   onClick={enterCookMode}
-                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', width: '100%', background: COLORS.rust, color: COLORS.cream, border: 'none', borderRadius: '3px', padding: '12px', fontWeight: 600, fontSize: '14px', cursor: 'pointer', marginBottom: '20px' }}
+                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', width: '100%', background: COLORS.rust, color: COLORS.cream, border: 'none', borderRadius: '3px', padding: '12px', fontWeight: 600, fontSize: '14px', cursor: 'pointer', marginBottom: '8px' }}
                 >
                   <Utensils size={16} /> Cook mode
+                </button>
+              )}
+
+              {detail.steps.length > 0 && (
+                <button
+                  onClick={() => startMealFrom(detail.id)}
+                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', width: '100%', background: 'none', color: COLORS.inkFaint, border: `1px solid ${COLORS.cardBorder}`, borderRadius: '3px', padding: '8px', fontWeight: 600, fontSize: '12px', cursor: 'pointer', marginBottom: '20px' }}
+                >
+                  <Layers size={13} /> Combine with another recipe
                 </button>
               )}
 

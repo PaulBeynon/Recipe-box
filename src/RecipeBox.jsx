@@ -3619,16 +3619,16 @@ async function handleFindImage() {
               </h1>
             </div>
             {view === 'grid' && index.length > 0 && !selectMode && !mealMode && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '4px', flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: '4px', flexWrap: 'wrap' }}>
                 <button
                   onClick={() => setView('shopping')}
-                  title="Shopping list"
-                  style={{ position: 'relative', background: 'none', border: 'none', color: COLORS.cream, opacity: 0.75, cursor: 'pointer', padding: '4px' }}
+                  style={{ position: 'relative', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '3px', background: 'none', border: 'none', color: COLORS.cream, opacity: 0.8, cursor: 'pointer', padding: '4px 6px' }}
                 >
-                  <ShoppingCart size={21} />
+                  <ShoppingCart size={20} />
+                  <span style={{ fontSize: '8.5px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.03em' }}>Shop</span>
                   {uncheckedCount > 0 && (
                     <span style={{
-                      position: 'absolute', top: '-2px', right: '-4px', background: COLORS.mustard, color: COLORS.ink,
+                      position: 'absolute', top: '-2px', right: '0px', background: COLORS.mustard, color: COLORS.ink,
                       fontSize: '9px', fontWeight: 700, borderRadius: '8px', minWidth: '15px', height: '15px',
                       display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 3px', lineHeight: 1,
                     }}>
@@ -3638,47 +3638,47 @@ async function handleFindImage() {
                 </button>
                 <button
                   onClick={toggleSelectMode}
-                  title="Select recipes for shopping list"
-                  style={{ background: 'none', border: 'none', color: COLORS.cream, opacity: 0.75, cursor: 'pointer', padding: '4px' }}
+                  style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '3px', background: 'none', border: 'none', color: COLORS.cream, opacity: 0.8, cursor: 'pointer', padding: '4px 6px' }}
                 >
-                  <ListPlus size={21} />
+                  <ListPlus size={20} />
+                  <span style={{ fontSize: '8.5px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.03em' }}>Select</span>
                 </button>
                 <button
                   onClick={toggleMealMode}
-                  title="Make a meal from multiple recipes"
-                  style={{ background: 'none', border: 'none', color: COLORS.cream, opacity: 0.75, cursor: 'pointer', padding: '4px' }}
+                  style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '3px', background: 'none', border: 'none', color: COLORS.cream, opacity: 0.8, cursor: 'pointer', padding: '4px 6px' }}
                 >
-                  <Layers size={21} />
+                  <Layers size={20} />
+                  <span style={{ fontSize: '8.5px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.03em' }}>Combine</span>
                 </button>
                 <button
                   onClick={() => setView('planner')}
-                  title="Meal planner"
-                  style={{ background: 'none', border: 'none', color: COLORS.cream, opacity: 0.75, cursor: 'pointer', padding: '4px' }}
+                  style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '3px', background: 'none', border: 'none', color: COLORS.cream, opacity: 0.8, cursor: 'pointer', padding: '4px 6px' }}
                 >
-                  <Calendar size={21} />
+                  <Calendar size={20} />
+                  <span style={{ fontSize: '8.5px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.03em' }}>Planner</span>
                 </button>
                 <button
                   onClick={() => setView('index')}
-                  title="Recipe index"
-                  style={{ background: 'none', border: 'none', color: COLORS.cream, opacity: 0.75, cursor: 'pointer', padding: '4px' }}
+                  style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '3px', background: 'none', border: 'none', color: COLORS.cream, opacity: 0.8, cursor: 'pointer', padding: '4px 6px' }}
                 >
-                  <BookOpen size={21} />
+                  <BookOpen size={20} />
+                  <span style={{ fontSize: '8.5px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.03em' }}>Index</span>
                 </button>
                 <button
                   onClick={exporting ? undefined : exportLibrary}
                   aria-disabled={exporting}
-                  title="Download a backup of your library"
-                  style={{ background: 'none', border: 'none', color: COLORS.cream, opacity: 0.75, cursor: exporting ? 'default' : 'pointer', padding: '4px', pointerEvents: exporting ? 'none' : 'auto' }}
+                  style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '3px', background: 'none', border: 'none', color: COLORS.cream, opacity: 0.8, cursor: exporting ? 'default' : 'pointer', padding: '4px 6px', pointerEvents: exporting ? 'none' : 'auto' }}
                 >
-                  {exporting ? <Loader2 size={21} className="animate-spin" /> : <Download size={21} />}
+                  {exporting ? <Loader2 size={20} className="animate-spin" /> : <Download size={20} />}
+                  <span style={{ fontSize: '8.5px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.03em' }}>Export</span>
                 </button>
                 <button
                   onClick={importing ? undefined : () => importInputRef.current?.click()}
                   aria-disabled={importing}
-                  title="Import a backup file"
-                  style={{ background: 'none', border: 'none', color: COLORS.cream, opacity: 0.75, cursor: importing ? 'default' : 'pointer', padding: '4px', pointerEvents: importing ? 'none' : 'auto' }}
+                  style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '3px', background: 'none', border: 'none', color: COLORS.cream, opacity: 0.8, cursor: importing ? 'default' : 'pointer', padding: '4px 6px', pointerEvents: importing ? 'none' : 'auto' }}
                 >
-                  {importing ? <Loader2 size={21} className="animate-spin" /> : <Upload size={21} />}
+                  {importing ? <Loader2 size={20} className="animate-spin" /> : <Upload size={20} />}
+                  <span style={{ fontSize: '8.5px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.03em' }}>Import</span>
                 </button>
                 <input
                   ref={importInputRef}
@@ -3690,10 +3690,10 @@ async function handleFindImage() {
                 {onSignOut && (
                   <button
                     onClick={onSignOut}
-                    title="Sign out"
-                    style={{ background: 'none', border: 'none', color: COLORS.cream, opacity: 0.75, cursor: 'pointer', padding: '4px' }}
+                    style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '3px', background: 'none', border: 'none', color: COLORS.cream, opacity: 0.8, cursor: 'pointer', padding: '4px 6px' }}
                   >
-                    <LogOut size={21} />
+                    <LogOut size={20} />
+                    <span style={{ fontSize: '8.5px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.03em' }}>Sign out</span>
                   </button>
                 )}
               </div>

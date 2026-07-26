@@ -3882,12 +3882,12 @@ async function handleFindImage() {
             <button
               onClick={() => { resetAddFlow(); setView('add'); }}
               style={{
-                position: 'fixed', bottom: '14px', right: '14px', width: '58px', height: '58px', borderRadius: '50%',
-                background: COLORS.rust, color: COLORS.cream, border: `3px solid ${COLORS.cream}`, boxShadow: '0 4px 16px rgba(43,38,32,0.45)',
+                position: 'fixed', bottom: '12px', right: '12px', width: '46px', height: '46px', borderRadius: '50%',
+                background: COLORS.rust, color: COLORS.cream, border: `2px solid ${COLORS.cream}`, boxShadow: '0 3px 10px rgba(43,38,32,0.4)',
                 display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', zIndex: 20,
               }}
             >
-              <Plus size={26} />
+              <Plus size={22} />
             </button>
           )}
 

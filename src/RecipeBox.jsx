@@ -3604,14 +3604,14 @@ async function handleFindImage() {
   );
 
   return (
-    <div style={{ minHeight: '100vh', background: COLORS.paper, fontFamily: 'Inter, sans-serif' }}>
+    <div style={{ minHeight: '100vh', background: COLORS.paper, fontFamily: 'Inter, sans-serif', overflowX: 'hidden' }}>
       <style>{FONT_IMPORT}</style>
 
       {/* Header */}
       {view !== 'cook' && (
         <div style={{ background: COLORS.ink, padding: '20px 16px 16px' }}>
           <div style={{ maxWidth: '840px', margin: '0 auto' }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: '10px', marginBottom: '14px' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
               <ChefHat size={22} color={COLORS.mustard} />
               <h1 style={{ fontFamily: 'Fraunces, serif', fontWeight: 700, fontSize: '22px', color: COLORS.cream, margin: 0, letterSpacing: '0.01em' }}>
@@ -3619,7 +3619,7 @@ async function handleFindImage() {
               </h1>
             </div>
             {view === 'grid' && index.length > 0 && !selectMode && !mealMode && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '4px', flexWrap: 'wrap' }}>
                 <button
                   onClick={() => setView('shopping')}
                   title="Shopping list"

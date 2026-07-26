@@ -455,9 +455,11 @@ async function testApiConnection() {
 const UK_STYLE_INSTRUCTION = `Write it in UK English, for a UK kitchen: use UK terms (e.g. "mince" not "ground beef", "coriander" not "cilantro", "aubergine"/"courgette" not "eggplant"/"zucchini", "plain flour"/"self-raising flour" not "all-purpose flour", "grill" not "broil", "caster sugar" where that's the traditional choice). Use metric measurements — grams, millilitres, °C — rather than cups, ounces, or °F; convert confidently using standard reference weights for common ingredients (e.g. 1 cup plain flour ≈ 125g, 1 cup granulated sugar ≈ 200g, 1 cup butter ≈ 227g) rather than leaving things vague or mixed-unit.`;
 
 async function extractRecipeFromUrl(url) {
-  const prompt = `Find and read the recipe at this exact URL: ${url}
+  const prompt = `Fetch and read the recipe at this exact URL: ${url}
 
-Extract it into strict JSON only — no markdown fences, no preamble, no commentary, no apology, no explanation. This rule applies even if you cannot access the page: you must still respond with ONLY the JSON object below, never with prose. Read the whole recipe carefully: capture every ingredient (including small ones like salt, garnishes, or "for serving" items) and every step in order — don't summarize or skip any. Preserve ingredient quantities and units exactly as written; do not round, approximate, or convert them.
+Use the web fetch tool to retrieve the actual page content directly — don't rely on search result snippets or cached summaries for the ingredient list, since those often drop exact quantities. Read the fetched page itself for the precise amounts.
+
+Extract it into strict JSON only — no markdown fences, no preamble, no commentary, no apology, no explanation. This rule applies even if you cannot access the page: you must still respond with ONLY the JSON object below, never with prose. Read the whole recipe carefully: capture every ingredient (including small ones like salt, garnishes, or "for serving" items) and every step in order — don't summarize or skip any. Preserve ingredient quantities and units exactly as written on the page; do not round, approximate, convert, or omit them.
 
 Return exactly this shape:
 {
@@ -468,7 +470,7 @@ Return exactly this shape:
   "steps": string[],  // Break the method into short, discrete steps — one clear action per step.
   "tags": string[],  // 2-5 short lowercase tags like cuisine or meal type, e.g. "italian", "dinner", "vegetarian", "pasta"
   "imageUrl": string,  // the full absolute URL of the recipe's main hero/food photo on the page (not an icon, logo, or ad), if you can identify one — else ""
-  "caveat": string,  // "" if you're confident this is accurate and complete. If you reconstructed the recipe from cached, indexed, or otherwise imperfect data rather than the live page — so it's usable but might not match exactly — say so briefly here. This does NOT mean you should leave the other fields empty; fill them in as best you can.
+  "caveat": string,  // "" if you're confident this is accurate and complete. If you could not fetch the live page and instead reconstructed the recipe from cached, indexed, or otherwise imperfect data — so it's usable but might not match exactly, especially the quantities — say so briefly here. This does NOT mean you should leave the other fields empty; fill them in as best you can.
   "error": string  // leave as "" whenever you were able to produce a real, usable recipe (even an imperfect or reconstructed one — use "caveat" above for that). Only set this, and leave ingredients/steps empty, if you could not find or reconstruct any usable recipe at all — e.g. "The page could not be retrieved and no recipe was found" or "No recipe exists at this URL".
 }`;
 
@@ -476,7 +478,10 @@ Return exactly this shape:
     model: 'claude-sonnet-4-6',
     max_tokens: 2000,
     messages: [{ role: 'user', content: prompt }],
-    tools: [{ type: 'web_search_20250305', name: 'web_search' }],
+    tools: [
+      { type: 'web_search_20250305', name: 'web_search' },
+      { type: 'web_fetch_20250910', name: 'web_fetch', max_uses: 3, max_content_tokens: 30000 },
+    ],
   });
 
   const text = (data.content || [])

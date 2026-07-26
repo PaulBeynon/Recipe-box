@@ -3621,6 +3621,13 @@ async function handleFindImage() {
             {view === 'grid' && index.length > 0 && !selectMode && !mealMode && (
               <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
                 <button
+                  onClick={() => { resetAddFlow(); setView('add'); }}
+                  title="Add a recipe"
+                  style={{ background: COLORS.rust, border: 'none', color: COLORS.cream, cursor: 'pointer', padding: '4px', width: '29px', height: '29px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', marginRight: '2px' }}
+                >
+                  <Plus size={18} />
+                </button>
+                <button
                   onClick={() => setView('shopping')}
                   title="Shopping list"
                   style={{ position: 'relative', background: 'none', border: 'none', color: COLORS.cream, opacity: 0.75, cursor: 'pointer', padding: '4px' }}
@@ -3837,9 +3844,17 @@ async function handleFindImage() {
               <p style={{ fontFamily: 'Fraunces, serif', fontSize: '17px', color: COLORS.ink, marginBottom: '4px' }}>
                 {index.length === 0 ? 'Your box is empty' : 'No matches'}
               </p>
-              <p style={{ fontSize: '13px' }}>
+              <p style={{ fontSize: '13px', marginBottom: index.length === 0 ? '18px' : 0 }}>
                 {index.length === 0 ? 'Snap a photo of a recipe to file the first card.' : 'Try a different search or tag.'}
               </p>
+              {index.length === 0 && (
+                <button
+                  onClick={() => { resetAddFlow(); setView('add'); }}
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', background: COLORS.rust, color: COLORS.cream, border: 'none', borderRadius: '3px', padding: '10px 18px', fontWeight: 600, fontSize: '14px', cursor: 'pointer' }}
+                >
+                  <Plus size={16} /> Add a recipe
+                </button>
+              )}
             </div>
           ) : (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: '12px' }}>
@@ -3876,19 +3891,6 @@ async function handleFindImage() {
                 </div>
               ))}
             </div>
-          )}
-
-          {!selectMode && !mealMode && (
-            <button
-              onClick={() => { resetAddFlow(); setView('add'); }}
-              style={{
-                position: 'fixed', bottom: '12px', right: '12px', width: '46px', height: '46px', borderRadius: '50%',
-                background: COLORS.rust, color: COLORS.cream, border: `2px solid ${COLORS.cream}`, boxShadow: '0 3px 10px rgba(43,38,32,0.4)',
-                display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', zIndex: 20,
-              }}
-            >
-              <Plus size={22} />
-            </button>
           )}
 
           {selectMode && selectedRecipeIds.length > 0 && (

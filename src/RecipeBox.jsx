@@ -3826,7 +3826,7 @@ async function handleFindImage() {
 
       {/* GRID VIEW */}
       {view === 'grid' && (
-        <div style={{ padding: '16px', maxWidth: '840px', margin: '0 auto' }}>
+        <div style={{ padding: '16px', paddingBottom: '90px', maxWidth: '840px', margin: '0 auto' }}>
           {loadingIndex ? (
             <div style={{ display: 'flex', justifyContent: 'center', padding: '60px 0', color: COLORS.inkFaint }}>
               <Loader2 size={22} className="animate-spin" />

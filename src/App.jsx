@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import { ChefHat, Loader2 } from 'lucide-react';
 import {
   auth, watchAuthState, signInWithGoogle, signInWithGooglePopup, signOutUser,
@@ -38,10 +38,92 @@ function inputStyle() {
   };
 }
 
+// WhatsApp, Instagram, Facebook, and a few other apps open links in a stripped-down in-app
+// browser (WebView) rather than the phone's default browser. These WebViews frequently break
+// Google's OAuth flow — both signInWithPopup (popups get blocked) and signInWithRedirect
+// (session storage doesn't survive the round trip to Google and back) — so we detect them and
+// point people to Safari/Chrome instead of leaving them stuck on a silent failure.
+function detectInAppBrowser() {
+  if (typeof navigator === 'undefined') return null;
+  const ua = navigator.userAgent || '';
+  const isIOS = /iPhone|iPad|iPod/.test(ua);
+  const isAndroid = /Android/.test(ua);
+
+  let app = null;
+  if (/\bFBAN\b|\bFBAV\b|FB_IAB/.test(ua)) app = 'Facebook';
+  else if (/Instagram/i.test(ua)) app = 'Instagram';
+  else if (/\bWhatsApp\b/i.test(ua)) app = 'WhatsApp';
+  else if (/\bLine\//i.test(ua)) app = 'LINE';
+  else if (/MicroMessenger/i.test(ua)) app = 'WeChat';
+
+  if (!app) return null;
+  return { app, isIOS, isAndroid };
+}
+
+function InAppBrowserBanner({ info }) {
+  const [copied, setCopied] = useState(false);
+
+  function fallbackCopy(url) {
+    const el = document.createElement('textarea');
+    el.value = url;
+    el.style.position = 'fixed';
+    el.style.opacity = '0';
+    document.body.appendChild(el);
+    el.focus();
+    el.select();
+    try { document.execCommand('copy'); } catch (e) { /* ignore */ }
+    document.body.removeChild(el);
+  }
+
+  function handleCopy() {
+    const url = window.location.href;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(url).catch(() => fallbackCopy(url));
+    } else {
+      fallbackCopy(url);
+    }
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2500);
+  }
+
+  const instructions = info.isIOS
+    ? 'Tap the ••• or Share icon at the top right, then choose "Open in Safari."'
+    : info.isAndroid
+      ? 'Tap the ⋮ menu at the top right, then choose "Open in Chrome" (or your default browser).'
+      : 'Open this page in Safari or Chrome instead.';
+
+  return (
+    <div style={{
+      background: '#FFF3E0', border: `1px solid ${COLORS.rust}`, borderRadius: '6px',
+      padding: '14px 16px', margin: '0 0 20px', width: '100%', maxWidth: '300px', textAlign: 'left',
+      boxSizing: 'border-box',
+    }}>
+      <p style={{ margin: '0 0 6px', fontSize: '13px', color: COLORS.ink, fontWeight: 700 }}>
+        Google sign-in won't work inside {info.app}
+      </p>
+      <p style={{ margin: '0 0 10px', fontSize: '13px', color: COLORS.inkFaint, lineHeight: 1.4 }}>
+        {instructions}
+      </p>
+      <button
+        onClick={handleCopy}
+        style={{
+          background: 'none', border: `1px solid ${COLORS.rust}`, color: COLORS.rust, borderRadius: '4px',
+          padding: '8px 14px', fontSize: '12px', fontWeight: 600, cursor: 'pointer',
+        }}
+      >
+        {copied ? 'Link copied!' : 'Copy link'}
+      </button>
+      <p style={{ margin: '10px 0 0', fontSize: '12px', color: COLORS.inkFaint }}>
+        Signing in with email and password below works fine here too, if that's easier.
+      </p>
+    </div>
+  );
+}
+
 function SignInScreen({
   onSignIn, signingIn, error,
   emailMode, setEmailMode, email, setEmail, password, setPassword,
-  onEmailSignIn, onEmailSignUp, onForgotPassword, emailBusy, emailNotice,
+  onEmailSignIn, onEmailSignUp, onForgotPassword, emailBusy, emailNotice, inAppInfo,
 }) {
   return (
     <div style={{
@@ -56,6 +138,7 @@ function SignInScreen({
       <p style={{ color: COLORS.inkFaint, fontSize: '14px', marginBottom: '26px', maxWidth: '320px' }}>
         Sign in to see your own recipes, shopping list, and meal plan. Nobody else can see your library.
       </p>
+      {inAppInfo && <InAppBrowserBanner info={inAppInfo} />}
       <button
         onClick={onSignIn}
         disabled={signingIn || emailBusy}
@@ -155,6 +238,7 @@ export default function App() {
   const [password, setPassword] = useState('');
   const [emailBusy, setEmailBusy] = useState(false);
   const [emailNotice, setEmailNotice] = useState('');
+  const inAppInfo = useMemo(() => detectInAppBrowser(), []);
 
   useEffect(() => {
     // Catches the result (or error) when the browser returns from Google's sign-in redirect —
@@ -288,6 +372,7 @@ export default function App() {
         onForgotPassword={handleForgotPassword}
         emailBusy={emailBusy}
         emailNotice={emailNotice}
+        inAppInfo={inAppInfo}
       />
     );
   }

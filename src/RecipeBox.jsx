@@ -4,7 +4,7 @@ import {
   AlertCircle, Pencil, Download, Minus, Utensils, ImagePlus, Check,
   Cookie, Fish, Beef, Salad, Soup, Pizza, Croissant, Egg, Wine, BookOpen, LayoutGrid, Star, Clock,
   ShoppingCart, CheckSquare, Square, ListPlus, Sparkles, Play, Pause, RotateCcw, Calendar, Copy, ExternalLink,
-  Upload, Globe, Leaf, LogOut, Mic, MicOff, Layers, MessageCircle, Send, HeartPulse,
+  Upload, Globe, Leaf, LogOut, Mic, MicOff, Layers, HeartPulse,
 } from 'lucide-react';
 import { CLOUD_FUNCTION_URL, FETCH_PAGE_IMAGE_URL, EXTRACT_VIDEO_TEXT_URL, auth } from './firebase-init';
 
@@ -570,67 +570,6 @@ Return strict JSON only — no markdown fences, no preamble, no commentary — i
     return JSON.parse(jsonSlice);
   } catch (parseErr) {
     throw new Error(`PARSE: ${parseErr.message} — raw: ${jsonSlice.slice(0, 200)}`);
-  }
-}
-
-// Powers the "ask the assistant" chat panel. Unlike the recipe-extraction functions above,
-// this is a general-purpose conversational helper that also gets read/write context about the
-// user's own recipe library and meal plan, and can propose concrete changes to the meal plan via
-// a small JSON action protocol (rather than free text), which the caller then applies for real.
-// Keeping actions to a narrow, explicit shape (assign_meal / clear_meal, always referencing an
-// existing recipe id) means the model can only ever point at recipes that genuinely exist in the
-// user's library — it can't silently invent or save new ones through this path.
-async function sendAssistantMessage(history, userText, recipesSummary, mealPlanSummary) {
-  const historyText = history
-    .map((h) => `${h.role === 'user' ? 'User' : 'Assistant'}: ${h.text}`)
-    .join('\n');
-
-  const prompt = `You are a friendly, concise cooking assistant built into a personal recipe app called Recipeasypeasy. The user can ask you for meal ideas, cooking questions, or ask you to update their weekly meal plan directly — you can actually make that change for them, not just describe it.
-
-Their current recipe library (each line: id | title | tags | time | servings) — you may ONLY ever reference a recipe from this exact list, using its exact id. Never invent a recipe id, and never assign a recipe that doesn't genuinely fit what the user asked for:
-${recipesSummary}
-
-Their current meal plan for the week:
-${mealPlanSummary}
-
-${historyText ? `Conversation so far:\n${historyText}\n\n` : ''}User's new message: "${userText.trim()}"
-
-Reply conversationally and helpfully, in a short paragraph or two at most. If the user asks you to change the meal plan (assign a day, swap something, clear a day) and one or more recipes in the library genuinely match, include the corresponding action(s) and say in your reply what you did. If nothing in their library fits what they're asking for, say so honestly and suggest they add a matching recipe first — don't force a mismatched assignment just to have done something.
-
-Return strict JSON only — no markdown fences, no preamble, no commentary — in exactly this shape:
-{
-  "reply": string,
-  "actions": [
-    { "type": "assign_meal", "day": string, "recipeId": string },
-    { "type": "clear_meal", "day": string }
-  ]
-}
-The "actions" array should be empty ([]) whenever no meal-plan change is needed.`;
-
-  const data = await postToClaudeWithRetry({
-    model: 'claude-sonnet-4-6',
-    max_tokens: 1200,
-    messages: [{ role: 'user', content: prompt }],
-  });
-
-  const text = (data.content || [])
-    .map((b) => (b.type === 'text' ? b.text : ''))
-    .filter(Boolean)
-    .join('\n');
-  const clean = text.replace(/```json|```/g, '').trim();
-  const firstBrace = clean.indexOf('{');
-  const lastBrace = clean.lastIndexOf('}');
-  if (firstBrace === -1 || lastBrace === -1 || lastBrace <= firstBrace) {
-    // Fall back to showing the raw reply rather than failing outright — a conversational
-    // helper should degrade gracefully if the model occasionally drifts from strict JSON.
-    return { reply: clean || "Sorry, I didn't quite catch that — could you try rephrasing?", actions: [] };
-  }
-  const jsonSlice = clean.slice(firstBrace, lastBrace + 1);
-  try {
-    const parsed = JSON.parse(jsonSlice);
-    return { reply: parsed.reply || '', actions: Array.isArray(parsed.actions) ? parsed.actions : [] };
-  } catch (parseErr) {
-    return { reply: clean || "Sorry, something went wrong reading that — could you try again?", actions: [] };
   }
 }
 
@@ -2383,11 +2322,6 @@ export default function RecipeBox({ onSignOut }) {
   const [describeText, setDescribeText] = useState('');
   const [generatingFromDescription, setGeneratingFromDescription] = useState(false);
   const [describeUsedSearch, setDescribeUsedSearch] = useState(null); // 'found' | 'generated' | null
-  const [chatOpen, setChatOpen] = useState(false);
-  const [chatMessages, setChatMessages] = useState([]); // [{role: 'user'|'assistant', text}]
-  const [chatInput, setChatInput] = useState('');
-  const [chatBusy, setChatBusy] = useState(false);
-  const [chatError, setChatError] = useState('');
   const [generatingHealthyPlan, setGeneratingHealthyPlan] = useState(false);
   const [healthyPlanSummary, setHealthyPlanSummary] = useState('');
   const [healthyPlanAllowNew, setHealthyPlanAllowNew] = useState(true);
@@ -2906,49 +2840,6 @@ export default function RecipeBox({ onSignOut }) {
       await window.storage.set('meal-plan', JSON.stringify(newPlan), false);
     } catch {
       setErrorMsg('Could not save your meal plan. Please try again.');
-    }
-  }
-
-  async function handleSendChatMessage() {
-    const userText = chatInput.trim();
-    if (!userText || chatBusy) return;
-    const nextHistory = [...chatMessages, { role: 'user', text: userText }];
-    setChatMessages(nextHistory);
-    setChatInput('');
-    setChatBusy(true);
-    setChatError('');
-    try {
-      const recipesSummary = index.length
-        ? index.map((r) => `${r.id} | ${r.title || 'Untitled'} | ${(r.tags || []).join(', ')} | ${r.time || ''} | serves ${r.servings || '?'}`).join('\n')
-        : '(no recipes saved yet)';
-      const mealPlanSummary = mealPlan
-        .map((d) => `${d.day}: ${d.recipeId ? (index.find((r) => r.id === d.recipeId)?.title || 'a recipe no longer in the library') : '(unassigned)'}`)
-        .join('\n');
-
-      const result = await sendAssistantMessage(chatMessages, userText, recipesSummary, mealPlanSummary);
-
-      let newPlan = mealPlan;
-      let planChanged = false;
-      for (const action of result.actions) {
-        if (action?.type === 'assign_meal' && WEEK_DAYS.includes(action.day) && index.some((r) => r.id === action.recipeId)) {
-          newPlan = newPlan.map((d) => (d.day === action.day ? { ...d, recipeId: action.recipeId } : d));
-          planChanged = true;
-        } else if (action?.type === 'clear_meal' && WEEK_DAYS.includes(action.day)) {
-          newPlan = newPlan.map((d) => (d.day === action.day ? { ...d, recipeId: null } : d));
-          planChanged = true;
-        }
-      }
-      if (planChanged) await persistMealPlan(newPlan);
-
-      setChatMessages([...nextHistory, { role: 'assistant', text: result.reply || "Done!" }]);
-    } catch (err) {
-      const msg = err?.message || '';
-      let friendly = 'Sorry, something went wrong. Please try again.';
-      if (msg.startsWith('AUTH')) friendly = "You'll need to be signed in for that.";
-      else if (msg.startsWith('NETWORK')) friendly = 'Network error — please check your connection and try again.';
-      setChatMessages([...nextHistory, { role: 'assistant', text: friendly }]);
-    } finally {
-      setChatBusy(false);
     }
   }
 
@@ -5690,101 +5581,6 @@ async function handleFindImage() {
           />
         );
       })()}
-
-      {view !== 'cook' && !chatOpen && !selectMode && !mealMode && (
-        <button
-          onClick={() => setChatOpen(true)}
-          aria-label="Ask the assistant"
-          style={{
-            position: 'fixed', bottom: '18px', left: '16px', width: '48px', height: '48px', borderRadius: '50%',
-            background: COLORS.rust, color: COLORS.cream, border: `2px solid ${COLORS.cream}`, boxShadow: '0 3px 12px rgba(0,0,0,0.3)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', zIndex: 20,
-          }}
-        >
-          <MessageCircle size={22} />
-        </button>
-      )}
-
-      {view !== 'cook' && chatOpen && (
-        <div
-          style={{
-            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.35)', zIndex: 70,
-            display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
-          }}
-          onClick={(e) => { if (e.target === e.currentTarget) setChatOpen(false); }}
-        >
-          <div
-            style={{
-              background: COLORS.paper, width: '100%', maxWidth: '480px', height: '78vh', maxHeight: '640px',
-              borderRadius: '14px 14px 0 0', display: 'flex', flexDirection: 'column', boxShadow: '0 -4px 24px rgba(0,0,0,0.3)',
-              fontFamily: 'Inter, sans-serif',
-            }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 16px', borderBottom: `1px solid ${COLORS.cardBorder}` }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <MessageCircle size={18} color={COLORS.rust} />
-                <span style={{ fontFamily: 'Fraunces, serif', fontWeight: 700, fontSize: '16px', color: COLORS.ink }}>Ask the assistant</span>
-              </div>
-              <button
-                onClick={() => setChatOpen(false)}
-                style={{ background: 'none', border: 'none', color: COLORS.inkFaint, cursor: 'pointer', padding: '4px' }}
-              >
-                <X size={20} />
-              </button>
-            </div>
-
-            <div style={{ flex: 1, overflowY: 'auto', padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
-              {chatMessages.length === 0 && (
-                <div style={{ color: COLORS.inkFaint, fontSize: '13px', textAlign: 'center', marginTop: '24px', lineHeight: 1.5 }}>
-                  Ask for meal ideas, cooking questions, or tell me to update your meal plan directly — e.g. "suggest meals for Monday and Tuesday that are both lamb based".
-                </div>
-              )}
-              {chatMessages.map((m, i) => (
-                <div
-                  key={i}
-                  style={{
-                    alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start',
-                    maxWidth: '85%', padding: '10px 13px', borderRadius: '12px', fontSize: '14px', lineHeight: 1.45,
-                    background: m.role === 'user' ? COLORS.rust : COLORS.cream,
-                    color: m.role === 'user' ? COLORS.cream : COLORS.ink,
-                    border: m.role === 'user' ? 'none' : `1px solid ${COLORS.cardBorder}`,
-                    whiteSpace: 'pre-wrap',
-                  }}
-                >
-                  {m.text}
-                </div>
-              ))}
-              {chatBusy && (
-                <div style={{ alignSelf: 'flex-start', display: 'flex', alignItems: 'center', gap: '6px', color: COLORS.inkFaint, fontSize: '13px', padding: '4px 2px' }}>
-                  <Loader2 size={14} className="animate-spin" /> Thinking…
-                </div>
-              )}
-            </div>
-
-            <div style={{ display: 'flex', gap: '8px', padding: '12px 14px', borderTop: `1px solid ${COLORS.cardBorder}` }}>
-              <input
-                type="text"
-                value={chatInput}
-                onChange={(e) => setChatInput(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter' && !chatBusy) handleSendChatMessage(); }}
-                placeholder="Ask me anything…"
-                style={{ ...inputStyle(), flex: 1 }}
-              />
-              <button
-                onClick={handleSendChatMessage}
-                disabled={!chatInput.trim() || chatBusy}
-                style={{
-                  background: chatInput.trim() && !chatBusy ? COLORS.rust : COLORS.cardBorder, color: COLORS.cream,
-                  border: 'none', borderRadius: '4px', width: '42px', display: 'flex', alignItems: 'center',
-                  justifyContent: 'center', cursor: chatInput.trim() && !chatBusy ? 'pointer' : 'default', flexShrink: 0,
-                }}
-              >
-                <Send size={17} />
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

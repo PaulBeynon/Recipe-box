@@ -37,7 +37,7 @@ self.addEventListener('fetch', (event) => {
   if (url.origin !== self.location.origin) return; // cross-origin: let it pass through untouched
 
   event.respondWith(
-    fetch(request)
+    fetch(request, { cache: 'no-store' })
       .then((response) => {
         const copy = response.clone();
         caches.open(CACHE_VERSION).then((cache) => cache.put(request, copy)).catch(() => {});

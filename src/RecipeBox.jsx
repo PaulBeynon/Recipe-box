@@ -4,7 +4,7 @@ import {
   AlertCircle, Pencil, Download, Minus, Utensils, ImagePlus, Check,
   Cookie, Fish, Beef, Salad, Soup, Pizza, Croissant, Egg, Wine, BookOpen, LayoutGrid, Star, Clock,
   ShoppingCart, CheckSquare, Square, ListPlus, Sparkles, Play, Pause, RotateCcw, Calendar, Copy, ExternalLink,
-  Upload, Globe, Leaf, LogOut, Mic, MicOff, Layers,
+  Upload, Globe, Leaf, LogOut, Mic, MicOff, Layers, MessageCircle, Send, HeartPulse,
 } from 'lucide-react';
 import { CLOUD_FUNCTION_URL, FETCH_PAGE_IMAGE_URL, EXTRACT_VIDEO_TEXT_URL, auth } from './firebase-init';
 
@@ -516,6 +516,122 @@ Return exactly this shape:
 
 function looksLikeUrl(str) {
   return /^https?:\/\/\S+$/i.test(str.trim());
+}
+
+// Powers "describe what you want" recipe adding: takes a free-text description (e.g. "a quick
+// midweek lamb curry" or "the chocolate babka from that one bakery in Brooklyn") and tries to
+// find a genuine, real recipe matching it via web search + web fetch first — same tools and
+// extraction discipline as extractRecipeFromUrl above, so a real match is preserved faithfully
+// rather than paraphrased. Only if nothing suitable turns up does it fall back to inventing one,
+// same as generateRecipeFromIngredients. The "source" field in the response tells the caller
+// which path was taken, so the review screen can show an appropriate heads-up.
+async function findOrGenerateRecipeFromDescription(description) {
+  const prompt = `The user wants a recipe matching this description: "${description.trim()}"
+
+First, use web search — and web fetch to read the actual page content, not just search snippets — to try to find a genuine, well-regarded existing recipe that matches what they're asking for. If you find a good match, extract it faithfully: preserve the real ingredient quantities and steps from that source exactly as written, rather than paraphrasing or inventing your own version.
+
+Only if, after searching, you can't find a good real match (the description is too vague, too unusual, or nothing suitable turns up), invent a genuine, complete, practical recipe yourself instead — proper quantities and clear steps, not a vague idea. ${UK_STYLE_INSTRUCTION}
+
+Return strict JSON only — no markdown fences, no preamble, no commentary — in exactly this shape:
+{
+  "title": string,
+  "servings": string,
+  "time": string,  // total time, in a short standardized format like "15 min", "1 hr", or "1 hr 30 min" (use "hr"/"min", not "hours"/"minutes")
+  "ingredients": string[],
+  "steps": string[],  // short, discrete steps — one clear action per step
+  "tags": string[],  // 2-5 short lowercase tags like cuisine or meal type
+  "imageUrl": string,  // the full absolute URL of a real hero/food photo from the source page, only if you extracted from a genuine found recipe and can identify one — else ""
+  "source": string,  // exactly "found" if this is a genuine existing recipe you located online, or "generated" if you invented it because nothing suitable turned up
+  "caveat": string  // "" if confident and complete; otherwise a brief note about any uncertainty (e.g. reconstructed from cached data)
+}`;
+
+  const data = await postToClaudeWithRetry({
+    model: 'claude-sonnet-4-6',
+    max_tokens: 2000,
+    messages: [{ role: 'user', content: prompt }],
+    tools: [
+      { type: 'web_search_20250305', name: 'web_search' },
+      { type: 'web_fetch_20250910', name: 'web_fetch', max_uses: 3, max_content_tokens: 30000 },
+    ],
+  });
+
+  const text = (data.content || [])
+    .map((b) => (b.type === 'text' ? b.text : ''))
+    .filter(Boolean)
+    .join('\n');
+  const clean = text.replace(/```json|```/g, '').trim();
+  const firstBrace = clean.indexOf('{');
+  const lastBrace = clean.lastIndexOf('}');
+  if (firstBrace === -1 || lastBrace === -1 || lastBrace <= firstBrace) {
+    throw new Error(`PARSE: No JSON object found in response: ${clean.slice(0, 200)}`);
+  }
+  const jsonSlice = clean.slice(firstBrace, lastBrace + 1);
+  try {
+    return JSON.parse(jsonSlice);
+  } catch (parseErr) {
+    throw new Error(`PARSE: ${parseErr.message} — raw: ${jsonSlice.slice(0, 200)}`);
+  }
+}
+
+// Powers the "ask the assistant" chat panel. Unlike the recipe-extraction functions above,
+// this is a general-purpose conversational helper that also gets read/write context about the
+// user's own recipe library and meal plan, and can propose concrete changes to the meal plan via
+// a small JSON action protocol (rather than free text), which the caller then applies for real.
+// Keeping actions to a narrow, explicit shape (assign_meal / clear_meal, always referencing an
+// existing recipe id) means the model can only ever point at recipes that genuinely exist in the
+// user's library — it can't silently invent or save new ones through this path.
+async function sendAssistantMessage(history, userText, recipesSummary, mealPlanSummary) {
+  const historyText = history
+    .map((h) => `${h.role === 'user' ? 'User' : 'Assistant'}: ${h.text}`)
+    .join('\n');
+
+  const prompt = `You are a friendly, concise cooking assistant built into a personal recipe app called Recipeasypeasy. The user can ask you for meal ideas, cooking questions, or ask you to update their weekly meal plan directly — you can actually make that change for them, not just describe it.
+
+Their current recipe library (each line: id | title | tags | time | servings) — you may ONLY ever reference a recipe from this exact list, using its exact id. Never invent a recipe id, and never assign a recipe that doesn't genuinely fit what the user asked for:
+${recipesSummary}
+
+Their current meal plan for the week:
+${mealPlanSummary}
+
+${historyText ? `Conversation so far:\n${historyText}\n\n` : ''}User's new message: "${userText.trim()}"
+
+Reply conversationally and helpfully, in a short paragraph or two at most. If the user asks you to change the meal plan (assign a day, swap something, clear a day) and one or more recipes in the library genuinely match, include the corresponding action(s) and say in your reply what you did. If nothing in their library fits what they're asking for, say so honestly and suggest they add a matching recipe first — don't force a mismatched assignment just to have done something.
+
+Return strict JSON only — no markdown fences, no preamble, no commentary — in exactly this shape:
+{
+  "reply": string,
+  "actions": [
+    { "type": "assign_meal", "day": string, "recipeId": string },
+    { "type": "clear_meal", "day": string }
+  ]
+}
+The "actions" array should be empty ([]) whenever no meal-plan change is needed.`;
+
+  const data = await postToClaudeWithRetry({
+    model: 'claude-sonnet-4-6',
+    max_tokens: 1200,
+    messages: [{ role: 'user', content: prompt }],
+  });
+
+  const text = (data.content || [])
+    .map((b) => (b.type === 'text' ? b.text : ''))
+    .filter(Boolean)
+    .join('\n');
+  const clean = text.replace(/```json|```/g, '').trim();
+  const firstBrace = clean.indexOf('{');
+  const lastBrace = clean.lastIndexOf('}');
+  if (firstBrace === -1 || lastBrace === -1 || lastBrace <= firstBrace) {
+    // Fall back to showing the raw reply rather than failing outright — a conversational
+    // helper should degrade gracefully if the model occasionally drifts from strict JSON.
+    return { reply: clean || "Sorry, I didn't quite catch that — could you try rephrasing?", actions: [] };
+  }
+  const jsonSlice = clean.slice(firstBrace, lastBrace + 1);
+  try {
+    const parsed = JSON.parse(jsonSlice);
+    return { reply: parsed.reply || '', actions: Array.isArray(parsed.actions) ? parsed.actions : [] };
+  } catch (parseErr) {
+    return { reply: clean || "Sorry, something went wrong reading that — could you try again?", actions: [] };
+  }
 }
 
 // Recognises YouTube/TikTok/Instagram links specifically, so the paste flow can route them
@@ -1172,6 +1288,73 @@ Include exactly one entry for each empty day listed above, using only recipe ids
   if (firstBrace2 === -1 || lastBrace2 === -1) throw new Error('No JSON found');
   const parsed2 = JSON.parse(clean2.slice(firstBrace2, lastBrace2 + 1));
   return Array.isArray(parsed2.assignments) ? parsed2.assignments : [];
+}
+
+// Powers "Generate healthy eating plan" in the meal planner. Fills only the currently-empty
+// days (never overwrites what the user already chose) with a genuinely balanced week: prefers
+// existing library recipes where a healthy fit exists, and — only if allowNewRecipes is true —
+// invents a brand-new healthy recipe for any day where nothing in the library fits well. New
+// recipes come back as full recipe data (same shape as the other generation flows) so the
+// caller can save them into the library for real, not just assign a placeholder.
+async function generateHealthyEatingPlan(mealPlan, availableRecipes, allowNewRecipes) {
+  const filledLines = mealPlan
+    .filter((d) => d.recipeId)
+    .map((d) => {
+      const r = availableRecipes.find((x) => x.id === d.recipeId);
+      return r ? `${d.day}: ${r.title} — ${(r.ingredientsPreview || []).join(', ') || '(no ingredients listed)'}` : `${d.day}: (already planned)`;
+    });
+  const emptyDays = mealPlan.filter((d) => !d.recipeId).map((d) => d.day);
+  if (emptyDays.length === 0) {
+    return { assignments: [], newRecipes: [], summary: 'Every day already has a meal planned — clear a day first if you\'d like a healthy suggestion for it.' };
+  }
+
+  const recipeLines = availableRecipes
+    .map((r) => `- id: ${r.id} | title: ${r.title} | tags: ${(r.tags || []).join(', ')} | ingredients: ${(r.ingredientsPreview || []).join(', ') || '(none listed)'}`)
+    .join('\n');
+
+  const prompt = `You are helping put together a genuinely healthy, balanced weekly eating plan for a home cook, filling in only the empty evening-meal slots below. Never touch the days that are already planned.
+
+Days already planned this week:
+${filledLines.length ? filledLines.join('\n') : '(none yet)'}
+
+Empty days to fill:
+${emptyDays.join(', ')}
+
+Their existing recipe library — prefer using these where a genuinely healthy, well-balanced option exists:
+${recipeLines || '(no recipes saved yet)'}
+
+Aim for real variety and balance across the WEEK as a whole, not every single meal needing to tick every box: plenty of vegetables, a good mix of protein sources, wholegrains where sensible, and not too many fried or heavily processed dishes in a row. This is about genuinely healthy, sustainable, enjoyable home cooking — not a restrictive diet, and NOT about calorie counting or numeric macro targets; never include calorie counts, macro numbers, or weight-related framing anywhere in your response.
+
+${allowNewRecipes ? `For any empty day where nothing in the library is a good healthy fit, invent a new, genuinely healthy recipe for that day instead — proper quantities and clear steps a home cook could actually follow. ${UK_STYLE_INSTRUCTION}` : 'Only use recipes from the library above — do not invent new ones. If a day genuinely has no reasonably healthy option in the library, leave it unassigned and say so plainly in your summary.'}
+
+Return strict JSON only — no markdown fences, no preamble, no commentary — in exactly this shape:
+{
+  "assignments": [ { "day": string, "recipeId": string } ],
+  "newRecipes": [ { "day": string, "title": string, "servings": string, "time": string, "ingredients": string[], "steps": string[], "tags": string[] } ],
+  "summary": string
+}
+${allowNewRecipes ? '' : 'Leave "newRecipes" as an empty array in this case.'}
+Only include a day in ONE of "assignments" or "newRecipes", never both, and only for days in the empty-days list above.`;
+
+  const data = await postToClaudeWithRetry({
+    model: 'claude-sonnet-4-6',
+    max_tokens: 3000,
+    messages: [{ role: 'user', content: prompt }],
+  });
+
+  const text = (data.content || []).map((b) => (b.type === 'text' ? b.text : '')).filter(Boolean).join('\n');
+  const clean = text.replace(/```json|```/g, '').trim();
+  const firstBrace = clean.indexOf('{');
+  const lastBrace = clean.lastIndexOf('}');
+  if (firstBrace === -1 || lastBrace === -1 || lastBrace <= firstBrace) {
+    throw new Error(`PARSE: No JSON object found in response: ${clean.slice(0, 200)}`);
+  }
+  const parsed = JSON.parse(clean.slice(firstBrace, lastBrace + 1));
+  return {
+    assignments: Array.isArray(parsed.assignments) ? parsed.assignments : [],
+    newRecipes: Array.isArray(parsed.newRecipes) ? parsed.newRecipes : [],
+    summary: parsed.summary || '',
+  };
 }
 
 async function extractRecipeFromImages(base64DataUrls) {
@@ -2140,6 +2323,17 @@ export default function RecipeBox({ onSignOut }) {
   const [generatingDish, setGeneratingDish] = useState(false);
   const [addMode, setAddMode] = useState(null); // null (menu) | photo | paste | manual | ingredients | meal
   const [pastedText, setPastedText] = useState('');
+  const [describeText, setDescribeText] = useState('');
+  const [generatingFromDescription, setGeneratingFromDescription] = useState(false);
+  const [describeUsedSearch, setDescribeUsedSearch] = useState(null); // 'found' | 'generated' | null
+  const [chatOpen, setChatOpen] = useState(false);
+  const [chatMessages, setChatMessages] = useState([]); // [{role: 'user'|'assistant', text}]
+  const [chatInput, setChatInput] = useState('');
+  const [chatBusy, setChatBusy] = useState(false);
+  const [chatError, setChatError] = useState('');
+  const [generatingHealthyPlan, setGeneratingHealthyPlan] = useState(false);
+  const [healthyPlanSummary, setHealthyPlanSummary] = useState('');
+  const [healthyPlanAllowNew, setHealthyPlanAllowNew] = useState(true);
   const [ingredientsText, setIngredientsText] = useState('');
   const [mealPhotoContext, setMealPhotoContext] = useState('');
   const [generatingFromIngredients, setGeneratingFromIngredients] = useState(false);
@@ -2658,6 +2852,49 @@ export default function RecipeBox({ onSignOut }) {
     }
   }
 
+  async function handleSendChatMessage() {
+    const userText = chatInput.trim();
+    if (!userText || chatBusy) return;
+    const nextHistory = [...chatMessages, { role: 'user', text: userText }];
+    setChatMessages(nextHistory);
+    setChatInput('');
+    setChatBusy(true);
+    setChatError('');
+    try {
+      const recipesSummary = index.length
+        ? index.map((r) => `${r.id} | ${r.title || 'Untitled'} | ${(r.tags || []).join(', ')} | ${r.time || ''} | serves ${r.servings || '?'}`).join('\n')
+        : '(no recipes saved yet)';
+      const mealPlanSummary = mealPlan
+        .map((d) => `${d.day}: ${d.recipeId ? (index.find((r) => r.id === d.recipeId)?.title || 'a recipe no longer in the library') : '(unassigned)'}`)
+        .join('\n');
+
+      const result = await sendAssistantMessage(chatMessages, userText, recipesSummary, mealPlanSummary);
+
+      let newPlan = mealPlan;
+      let planChanged = false;
+      for (const action of result.actions) {
+        if (action?.type === 'assign_meal' && WEEK_DAYS.includes(action.day) && index.some((r) => r.id === action.recipeId)) {
+          newPlan = newPlan.map((d) => (d.day === action.day ? { ...d, recipeId: action.recipeId } : d));
+          planChanged = true;
+        } else if (action?.type === 'clear_meal' && WEEK_DAYS.includes(action.day)) {
+          newPlan = newPlan.map((d) => (d.day === action.day ? { ...d, recipeId: null } : d));
+          planChanged = true;
+        }
+      }
+      if (planChanged) await persistMealPlan(newPlan);
+
+      setChatMessages([...nextHistory, { role: 'assistant', text: result.reply || "Done!" }]);
+    } catch (err) {
+      const msg = err?.message || '';
+      let friendly = 'Sorry, something went wrong. Please try again.';
+      if (msg.startsWith('AUTH')) friendly = "You'll need to be signed in for that.";
+      else if (msg.startsWith('NETWORK')) friendly = 'Network error — please check your connection and try again.';
+      setChatMessages([...nextHistory, { role: 'assistant', text: friendly }]);
+    } finally {
+      setChatBusy(false);
+    }
+  }
+
   function openDayPicker(dayIndex) {
     setPickingDayIndex(dayIndex);
     setPlannerQuery('');
@@ -2704,6 +2941,63 @@ export default function RecipeBox({ onSignOut }) {
     }
   }
 
+  async function handleGenerateHealthyPlan() {
+    if (generatingHealthyPlan) return;
+    const emptyCount = mealPlan.filter((d) => !d.recipeId).length;
+    if (emptyCount === 0) return;
+    setGeneratingHealthyPlan(true);
+    setErrorMsg('');
+    setHealthyPlanSummary('');
+    try {
+      const result = await generateHealthyEatingPlan(mealPlan, index, healthyPlanAllowNew);
+
+      let newPlan = mealPlan;
+      for (const a of result.assignments) {
+        if (a?.day && a?.recipeId && WEEK_DAYS.includes(a.day) && index.some((r) => r.id === a.recipeId)) {
+          newPlan = newPlan.map((d) => (d.day === a.day ? { ...d, recipeId: a.recipeId } : d));
+        }
+      }
+
+      const newIndexEntries = [];
+      const newFullRecipes = [];
+      for (const nr of result.newRecipes) {
+        if (!nr?.day || !WEEK_DAYS.includes(nr.day)) continue;
+        const id = uid();
+        const ingredientsArr = Array.isArray(nr.ingredients) ? nr.ingredients : [];
+        const stepsArr = Array.isArray(nr.steps) ? nr.steps : [];
+        const tagsArr = (Array.isArray(nr.tags) ? nr.tags : []).map((t) => String(t).trim().toLowerCase()).filter(Boolean);
+        const createdAt = Date.now();
+        const fullData = {
+          id, title: nr.title || 'Untitled recipe', servings: nr.servings || '', time: nr.time || '',
+          ingredients: ingredientsArr, steps: stepsArr, tags: tagsArr,
+          image: null, images: [], notes: '', rating: 0, createdAt,
+        };
+        newFullRecipes.push(fullData);
+        newIndexEntries.push({
+          id, title: fullData.title, tags: tagsArr, thumbnail: null,
+          ingredientsPreview: ingredientsArr, time: fullData.time, rating: 0, createdAt,
+        });
+        newPlan = newPlan.map((d) => (d.day === nr.day ? { ...d, recipeId: id } : d));
+      }
+
+      if (newFullRecipes.length > 0) {
+        await Promise.all(newFullRecipes.map((r) => window.storage.set(`recipe-full:${r.id}`, JSON.stringify(r), false)));
+        await persistIndex([...newIndexEntries, ...index]);
+        // Fire-and-forget, same as the manual save flow — don't make the user wait on photo
+        // lookups for what might be several new recipes at once.
+        newFullRecipes.forEach((r) => autoFindPhotoForRecipe(r.id, r.title, r.tags));
+      }
+
+      await persistMealPlan(newPlan);
+      setHealthyPlanSummary(result.summary || 'Your healthy eating plan is ready.');
+    } catch (err) {
+      const msg = err?.message || '';
+      setErrorMsg(`Could not put together a healthy eating plan right now (${msg || 'unknown error'}). Please try again.`);
+    } finally {
+      setGeneratingHealthyPlan(false);
+    }
+  }
+
   async function generatePlanShoppingList() {
     if (generatingPlanList) return;
     const assignedDays = mealPlan.filter((d) => d.recipeId);
@@ -2734,6 +3028,8 @@ export default function RecipeBox({ onSignOut }) {
     setAddStage('capture');
     setAddMode(null);
     setPastedText('');
+    setDescribeText('');
+    setDescribeUsedSearch(null);
     setIngredientsText('');
     setPendingPhotos([]);
     setFetchedImageUrl('');
@@ -2749,6 +3045,8 @@ export default function RecipeBox({ onSignOut }) {
   function backToAddMethodMenu() {
     setAddMode(null);
     setPastedText('');
+    setDescribeText('');
+    setDescribeUsedSearch(null);
     setIngredientsText('');
     setMealPhotoContext('');
     setPendingPhotos([]);
@@ -2867,7 +3165,46 @@ export default function RecipeBox({ onSignOut }) {
     }
   }
 
-  // Runs an image-based API call against the current pendingPhotos, and if it comes back
+  async function handleDescribeExtract() {
+    if (!describeText.trim()) return;
+    setAddStage('extracting');
+    setGeneratingFromDescription(true);
+    setDescribeUsedSearch(null);
+    try {
+      const extracted = await findOrGenerateRecipeFromDescription(describeText);
+      setForm({
+        title: extracted.title || '',
+        servings: extracted.servings || '',
+        time: extracted.time || '',
+        ingredients: (extracted.ingredients || []).join('\n'),
+        steps: (extracted.steps || []).join('\n'),
+        tags: (extracted.tags || []).join(', '),
+      });
+      const wasGenerated = extracted.source !== 'found';
+      setDescribeUsedSearch(wasGenerated ? 'generated' : 'found');
+      if (extracted.imageUrl) setFetchedImageUrl(extracted.imageUrl);
+      setUrlExtractHadNoImage(!extracted.imageUrl);
+      if (wasGenerated) {
+        setErrorMsg("Heads up: no matching real recipe turned up, so this one was invented to fit what you described — worth double-checking quantities and technique.");
+      } else if (extracted.caveat) {
+        setErrorMsg(`Heads up: ${extracted.caveat} Worth double-checking the details below against the original.`);
+      }
+      setAddStage('review');
+    } catch (err) {
+      const msg = err?.message || '';
+      if (msg.startsWith('NETWORK')) setErrorMsg(`Network error: ${msg.replace('NETWORK: ', '')}`);
+      else if (msg.startsWith('API')) setErrorMsg(`API error: ${msg.replace('API: ', '')}`);
+      else if (msg.startsWith('READ')) setErrorMsg(`Couldn't read the API response: ${msg.replace('READ: ', '')}`);
+      else if (msg.startsWith('PARSE')) setErrorMsg(`Got a response but couldn't parse it as a recipe. ${msg.replace('PARSE: ', '')}`);
+      else setErrorMsg(`Something went wrong: ${msg || 'unknown error'}`);
+      setForm({ title: '', servings: '', time: '', ingredients: '', steps: '', tags: '' });
+      setAddStage('review');
+    } finally {
+      setGeneratingFromDescription(false);
+    }
+  }
+
+
   // with an empty body (almost always a sandbox request-size/timeout issue, not a real
   // API error), automatically retries with progressively smaller, lower-quality copies
   // before giving up. A single retry wasn't always enough for larger or multi-photo
@@ -4237,6 +4574,38 @@ async function handleFindImage() {
                 })}
               </div>
 
+              {mealPlan.some((d) => !d.recipeId) && (
+                <div style={{ marginBottom: '10px' }}>
+                  <button
+                    onClick={generatingHealthyPlan ? undefined : handleGenerateHealthyPlan}
+                    aria-disabled={generatingHealthyPlan}
+                    style={{
+                      width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
+                      background: 'none', color: COLORS.rust, border: `1px solid ${COLORS.rust}`, borderRadius: '3px',
+                      padding: '12px', fontWeight: 600, fontSize: '14px', cursor: generatingHealthyPlan ? 'default' : 'pointer',
+                      pointerEvents: generatingHealthyPlan ? 'none' : 'auto',
+                    }}
+                  >
+                    {generatingHealthyPlan ? <Loader2 size={16} className="animate-spin" /> : <HeartPulse size={16} />}
+                    {generatingHealthyPlan ? 'Putting together a balanced week…' : 'Generate healthy eating plan'}
+                  </button>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '8px', fontSize: '12.5px', color: COLORS.inkFaint, cursor: 'pointer' }}>
+                    <input
+                      type="checkbox"
+                      checked={healthyPlanAllowNew}
+                      onChange={(e) => setHealthyPlanAllowNew(e.target.checked)}
+                      style={{ margin: 0 }}
+                    />
+                    Also invent new healthy recipes for any days my library can't fill well
+                  </label>
+                  {healthyPlanSummary && (
+                    <div style={{ marginTop: '10px', background: COLORS.cream, border: `1px solid ${COLORS.cardBorder}`, borderRadius: '4px', padding: '11px 13px', fontSize: '13px', color: COLORS.ink, lineHeight: 1.5 }}>
+                      {healthyPlanSummary}
+                    </div>
+                  )}
+                </div>
+              )}
+
               {mealPlan.some((d) => !d.recipeId) && index.length > 0 && (
                 <button
                   onClick={autoFilling ? undefined : autoFillEmptyDays}
@@ -4252,6 +4621,7 @@ async function handleFindImage() {
                   {autoFilling ? 'Filling in the rest…' : 'Auto-fill remaining days'}
                 </button>
               )}
+
 
               <button
                 onClick={generatingPlanList || mealPlan.every((d) => !d.recipeId) ? undefined : generatePlanShoppingList}
@@ -4355,6 +4725,7 @@ async function handleFindImage() {
               </p>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '20px' }}>
                 {[
+                  { mode: 'describe', icon: Search, title: 'Describe what you want', desc: "Tell us what you fancy — we'll search for a real recipe, or invent one if nothing fits." },
                   { mode: 'photo', icon: Camera, title: 'Photograph a recipe', desc: 'From a magazine, cookbook, or clipping.' },
                   { mode: 'paste', icon: ExternalLink, title: 'From a URL or pasted text', desc: "Paste a link — including YouTube, TikTok, or Instagram — or the recipe text itself." },
                   { mode: 'manual', icon: Pencil, title: 'Add your own recipe', desc: 'Type it in yourself — no AI involved.' },
@@ -4406,7 +4777,35 @@ async function handleFindImage() {
                   photos" button that needs this mounted regardless of which mode is active. */}
               <input ref={fileInputRef} type="file" accept="image/*" multiple onChange={handleFileSelected} style={{ display: 'none' }} />
 
-              {addMode === 'photo' ? (
+              {addMode === 'describe' ? (
+                <>
+                  <Search size={30} color={COLORS.rust} style={{ marginBottom: '12px' }} />
+                  <p style={{ fontFamily: 'Fraunces, serif', fontSize: '18px', color: COLORS.ink, marginBottom: '6px' }}>
+                    Describe what you want
+                  </p>
+                  <p style={{ fontSize: '13px', color: COLORS.inkFaint, marginBottom: '14px' }}>
+                    Tell us what you fancy — as specific or as loose as you like, e.g. "a quick midweek lamb curry" or "a proper Sunday roast chicken". We'll search for a real recipe that matches, and invent one only if nothing suitable turns up.
+                  </p>
+                  <textarea
+                    rows={4}
+                    value={describeText}
+                    onChange={(e) => setDescribeText(e.target.value)}
+                    placeholder="e.g. a spicy prawn noodle dish, ready in under 30 minutes…"
+                    style={{ ...inputStyle(), resize: 'vertical', marginBottom: '14px', textAlign: 'left' }}
+                  />
+                  <button
+                    onClick={handleDescribeExtract}
+                    disabled={!describeText.trim()}
+                    style={{
+                      background: describeText.trim() ? COLORS.sage : COLORS.cardBorder, color: COLORS.cream, border: 'none', borderRadius: '3px',
+                      padding: '11px 22px', fontFamily: 'Inter, sans-serif', fontWeight: 600, fontSize: '14px',
+                      cursor: describeText.trim() ? 'pointer' : 'default',
+                    }}
+                  >
+                    Find or invent a recipe
+                  </button>
+                </>
+              ) : addMode === 'photo' ? (
                 <>
                   <Camera size={30} color={COLORS.rust} style={{ marginBottom: '12px' }} />
                   <p style={{ fontFamily: 'Fraunces, serif', fontSize: '18px', color: COLORS.ink, marginBottom: '6px' }}>
@@ -4625,7 +5024,7 @@ async function handleFindImage() {
               )}
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', color: COLORS.ink }}>
                 <Loader2 size={18} className="animate-spin" />
-                <span style={{ fontSize: '14px' }}>{retryingSmaller ? 'That photo was a bit large — retrying with a smaller copy…' : generatingDish ? 'Writing up the recipe…' : generatingFromIngredients ? 'Inventing a recipe…' : generatingFromMealPhoto ? 'Working out the recipe…' : extractingVideo ? 'Reading the video…' : 'Reading the recipe…'}</span>
+                <span style={{ fontSize: '14px' }}>{retryingSmaller ? 'That photo was a bit large — retrying with a smaller copy…' : generatingFromDescription ? 'Searching for a matching recipe…' : generatingDish ? 'Writing up the recipe…' : generatingFromIngredients ? 'Inventing a recipe…' : generatingFromMealPhoto ? 'Working out the recipe…' : extractingVideo ? 'Reading the video…' : 'Reading the recipe…'}</span>
               </div>
             </div>
           )}
@@ -5225,6 +5624,101 @@ async function handleFindImage() {
           />
         );
       })()}
+
+      {view !== 'cook' && !chatOpen && (
+        <button
+          onClick={() => setChatOpen(true)}
+          aria-label="Ask the assistant"
+          style={{
+            position: 'fixed', bottom: '20px', right: '20px', width: '52px', height: '52px', borderRadius: '50%',
+            background: COLORS.rust, color: COLORS.cream, border: 'none', boxShadow: '0 3px 12px rgba(0,0,0,0.3)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', zIndex: 60,
+          }}
+        >
+          <MessageCircle size={24} />
+        </button>
+      )}
+
+      {view !== 'cook' && chatOpen && (
+        <div
+          style={{
+            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.35)', zIndex: 70,
+            display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
+          }}
+          onClick={(e) => { if (e.target === e.currentTarget) setChatOpen(false); }}
+        >
+          <div
+            style={{
+              background: COLORS.paper, width: '100%', maxWidth: '480px', height: '78vh', maxHeight: '640px',
+              borderRadius: '14px 14px 0 0', display: 'flex', flexDirection: 'column', boxShadow: '0 -4px 24px rgba(0,0,0,0.3)',
+              fontFamily: 'Inter, sans-serif',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 16px', borderBottom: `1px solid ${COLORS.cardBorder}` }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <MessageCircle size={18} color={COLORS.rust} />
+                <span style={{ fontFamily: 'Fraunces, serif', fontWeight: 700, fontSize: '16px', color: COLORS.ink }}>Ask the assistant</span>
+              </div>
+              <button
+                onClick={() => setChatOpen(false)}
+                style={{ background: 'none', border: 'none', color: COLORS.inkFaint, cursor: 'pointer', padding: '4px' }}
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <div style={{ flex: 1, overflowY: 'auto', padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              {chatMessages.length === 0 && (
+                <div style={{ color: COLORS.inkFaint, fontSize: '13px', textAlign: 'center', marginTop: '24px', lineHeight: 1.5 }}>
+                  Ask for meal ideas, cooking questions, or tell me to update your meal plan directly — e.g. "suggest meals for Monday and Tuesday that are both lamb based".
+                </div>
+              )}
+              {chatMessages.map((m, i) => (
+                <div
+                  key={i}
+                  style={{
+                    alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start',
+                    maxWidth: '85%', padding: '10px 13px', borderRadius: '12px', fontSize: '14px', lineHeight: 1.45,
+                    background: m.role === 'user' ? COLORS.rust : COLORS.cream,
+                    color: m.role === 'user' ? COLORS.cream : COLORS.ink,
+                    border: m.role === 'user' ? 'none' : `1px solid ${COLORS.cardBorder}`,
+                    whiteSpace: 'pre-wrap',
+                  }}
+                >
+                  {m.text}
+                </div>
+              ))}
+              {chatBusy && (
+                <div style={{ alignSelf: 'flex-start', display: 'flex', alignItems: 'center', gap: '6px', color: COLORS.inkFaint, fontSize: '13px', padding: '4px 2px' }}>
+                  <Loader2 size={14} className="animate-spin" /> Thinking…
+                </div>
+              )}
+            </div>
+
+            <div style={{ display: 'flex', gap: '8px', padding: '12px 14px', borderTop: `1px solid ${COLORS.cardBorder}` }}>
+              <input
+                type="text"
+                value={chatInput}
+                onChange={(e) => setChatInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter' && !chatBusy) handleSendChatMessage(); }}
+                placeholder="Ask me anything…"
+                style={{ ...inputStyle(), flex: 1 }}
+              />
+              <button
+                onClick={handleSendChatMessage}
+                disabled={!chatInput.trim() || chatBusy}
+                style={{
+                  background: chatInput.trim() && !chatBusy ? COLORS.rust : COLORS.cardBorder, color: COLORS.cream,
+                  border: 'none', borderRadius: '4px', width: '42px', display: 'flex', alignItems: 'center',
+                  justifyContent: 'center', cursor: chatInput.trim() && !chatBusy ? 'pointer' : 'default', flexShrink: 0,
+                }}
+              >
+                <Send size={17} />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

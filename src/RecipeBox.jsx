@@ -2048,6 +2048,63 @@ function FetchedImagePreview({ url, onRemove, onError }) {
   );
 }
 
+// One thumbnail in the multi-photo capture strip (used across the "photograph a recipe" and
+// "photo of a meal" add-modes). When showKeyControl is true and there's more than one photo,
+// shows a star button so the user can pick which photo becomes the recipe's main/hero image —
+// otherwise that's always just whichever photo happened to be taken first. The current key photo
+// (index 0, since save logic always uses pendingPhotos[0] as the hero image) gets a filled badge
+// instead of a button, since it's already the key photo.
+function PendingPhotoThumb({ photo, isKey, showKeyControl, onRemove, onMakeKey }) {
+  return (
+    <div style={{ position: 'relative' }}>
+      <img
+        src={photo.thumb}
+        alt=""
+        style={{
+          width: '80px', height: '100px', objectFit: 'cover', borderRadius: '3px',
+          boxShadow: '0 1px 4px rgba(0,0,0,0.25)',
+          border: showKeyControl && isKey ? `2px solid ${COLORS.sage}` : '2px solid transparent',
+        }}
+      />
+      <button
+        onClick={onRemove}
+        title="Remove this photo"
+        style={{ position: 'absolute', top: '-6px', right: '-6px', background: COLORS.rust, color: COLORS.cream, border: 'none', borderRadius: '50%', width: '20px', height: '20px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}
+      >
+        <X size={12} />
+      </button>
+      {showKeyControl && (
+        isKey ? (
+          <div
+            title="This is the recipe's main photo"
+            style={{
+              position: 'absolute', bottom: '-6px', left: '50%', transform: 'translateX(-50%)',
+              background: COLORS.sage, color: COLORS.cream, borderRadius: '10px', padding: '2px 7px',
+              display: 'flex', alignItems: 'center', gap: '3px', fontSize: '9.5px', fontWeight: 700,
+              whiteSpace: 'nowrap', boxShadow: '0 1px 4px rgba(0,0,0,0.25)',
+            }}
+          >
+            <Star size={9} fill={COLORS.cream} /> KEY PIC
+          </div>
+        ) : (
+          <button
+            onClick={onMakeKey}
+            title="Make this the recipe's main photo"
+            style={{
+              position: 'absolute', bottom: '-6px', left: '50%', transform: 'translateX(-50%)',
+              background: COLORS.cream, color: COLORS.rust, border: `1px solid ${COLORS.rust}`, borderRadius: '10px',
+              padding: '2px 7px', display: 'flex', alignItems: 'center', gap: '3px', fontSize: '9.5px', fontWeight: 700,
+              cursor: 'pointer', whiteSpace: 'nowrap', boxShadow: '0 1px 4px rgba(0,0,0,0.2)',
+            }}
+          >
+            <Star size={9} /> MAKE KEY
+          </button>
+        )
+      )}
+    </div>
+  );
+}
+
 function Field({ label, children, style }) {
   return (
     <div style={{ marginBottom: '12px', ...style }}>
@@ -3060,6 +3117,19 @@ export default function RecipeBox({ onSignOut }) {
     setForm({ title: '', servings: '', time: '', ingredients: '', steps: '', tags: '' });
     setAddMode('manual');
     setAddStage('review');
+  }
+
+  // Moves the chosen photo to the front of pendingPhotos — save logic (handleSaveRecipe) always
+  // uses pendingPhotos[0] as the recipe's main/hero image and thumbnail, so "make key pic" is
+  // really just "make this the first photo," done via reordering rather than a separate flag.
+  function makeKeyPhoto(idx) {
+    setPendingPhotos((prev) => {
+      if (idx <= 0 || idx >= prev.length) return prev;
+      const arr = [...prev];
+      const [chosen] = arr.splice(idx, 1);
+      arr.unshift(chosen);
+      return arr;
+    });
   }
 
   async function handleFileSelected(e) {
@@ -4816,17 +4886,16 @@ async function handleFindImage() {
                   </p>
 
                   {pendingPhotos.length > 0 && (
-                    <div style={{ display: 'flex', gap: '8px', justifyContent: 'center', marginBottom: '16px' }}>
+                    <div style={{ display: 'flex', gap: '8px', justifyContent: 'center', marginBottom: pendingPhotos.length > 1 ? '22px' : '16px', flexWrap: 'wrap' }}>
                       {pendingPhotos.map((p, i) => (
-                        <div key={i} style={{ position: 'relative' }}>
-                          <img src={p.thumb} alt="" style={{ width: '80px', height: '100px', objectFit: 'cover', borderRadius: '3px', boxShadow: '0 1px 4px rgba(0,0,0,0.25)' }} />
-                          <button
-                            onClick={() => setPendingPhotos((prev) => prev.filter((_, idx) => idx !== i))}
-                            style={{ position: 'absolute', top: '-6px', right: '-6px', background: COLORS.rust, color: COLORS.cream, border: 'none', borderRadius: '50%', width: '20px', height: '20px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}
-                          >
-                            <X size={12} />
-                          </button>
-                        </div>
+                        <PendingPhotoThumb
+                          key={i}
+                          photo={p}
+                          isKey={i === 0}
+                          showKeyControl={pendingPhotos.length > 1}
+                          onRemove={() => setPendingPhotos((prev) => prev.filter((_, idx) => idx !== i))}
+                          onMakeKey={() => makeKeyPhoto(i)}
+                        />
                       ))}
                     </div>
                   )}
@@ -4899,15 +4968,13 @@ async function handleFindImage() {
                   {pendingPhotos.length > 0 && (
                     <div style={{ display: 'flex', gap: '8px', justifyContent: 'center', marginBottom: '16px', flexWrap: 'wrap' }}>
                       {pendingPhotos.map((p, i) => (
-                        <div key={i} style={{ position: 'relative' }}>
-                          <img src={p.thumb} alt="" style={{ width: '80px', height: '100px', objectFit: 'cover', borderRadius: '3px', boxShadow: '0 1px 4px rgba(0,0,0,0.25)' }} />
-                          <button
-                            onClick={() => setPendingPhotos((prev) => prev.filter((_, idx) => idx !== i))}
-                            style={{ position: 'absolute', top: '-6px', right: '-6px', background: COLORS.rust, color: COLORS.cream, border: 'none', borderRadius: '50%', width: '20px', height: '20px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}
-                          >
-                            <X size={12} />
-                          </button>
-                        </div>
+                        <PendingPhotoThumb
+                          key={i}
+                          photo={p}
+                          isKey={false}
+                          showKeyControl={false}
+                          onRemove={() => setPendingPhotos((prev) => prev.filter((_, idx) => idx !== i))}
+                        />
                       ))}
                     </div>
                   )}
@@ -4958,17 +5025,16 @@ async function handleFindImage() {
                   </p>
 
                   {pendingPhotos.length > 0 && (
-                    <div style={{ display: 'flex', gap: '8px', justifyContent: 'center', marginBottom: '16px', flexWrap: 'wrap' }}>
+                    <div style={{ display: 'flex', gap: '8px', justifyContent: 'center', marginBottom: pendingPhotos.length > 1 ? '22px' : '16px', flexWrap: 'wrap' }}>
                       {pendingPhotos.map((p, i) => (
-                        <div key={i} style={{ position: 'relative' }}>
-                          <img src={p.thumb} alt="" style={{ width: '80px', height: '100px', objectFit: 'cover', borderRadius: '3px', boxShadow: '0 1px 4px rgba(0,0,0,0.25)' }} />
-                          <button
-                            onClick={() => setPendingPhotos((prev) => prev.filter((_, idx) => idx !== i))}
-                            style={{ position: 'absolute', top: '-6px', right: '-6px', background: COLORS.rust, color: COLORS.cream, border: 'none', borderRadius: '50%', width: '20px', height: '20px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}
-                          >
-                            <X size={12} />
-                          </button>
-                        </div>
+                        <PendingPhotoThumb
+                          key={i}
+                          photo={p}
+                          isKey={i === 0}
+                          showKeyControl={pendingPhotos.length > 1}
+                          onRemove={() => setPendingPhotos((prev) => prev.filter((_, idx) => idx !== i))}
+                          onMakeKey={() => makeKeyPhoto(i)}
+                        />
                       ))}
                     </div>
                   )}

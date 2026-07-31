@@ -5625,17 +5625,17 @@ async function handleFindImage() {
         );
       })()}
 
-      {view !== 'cook' && !chatOpen && (
+      {view !== 'cook' && !chatOpen && !selectMode && !mealMode && (
         <button
           onClick={() => setChatOpen(true)}
           aria-label="Ask the assistant"
           style={{
-            position: 'fixed', bottom: '20px', right: '20px', width: '52px', height: '52px', borderRadius: '50%',
-            background: COLORS.rust, color: COLORS.cream, border: 'none', boxShadow: '0 3px 12px rgba(0,0,0,0.3)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', zIndex: 60,
+            position: 'fixed', bottom: '18px', left: '16px', width: '48px', height: '48px', borderRadius: '50%',
+            background: COLORS.rust, color: COLORS.cream, border: `2px solid ${COLORS.cream}`, boxShadow: '0 3px 12px rgba(0,0,0,0.3)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', zIndex: 20,
           }}
         >
-          <MessageCircle size={24} />
+          <MessageCircle size={22} />
         </button>
       )}
 

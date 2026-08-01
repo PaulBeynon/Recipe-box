@@ -2345,6 +2345,7 @@ export default function RecipeBox({ onSignOut }) {
   const importInputRef = useRef(null);
   const [confirmDialog, setConfirmDialog] = useState(null); // { title, message, confirmLabel, danger, onConfirm }
   const fileInputRef = useRef(null);
+  const cameraInputRef = useRef(null);
 
   // detail-view-only state
   const [editing, setEditing] = useState(false);
@@ -4734,9 +4735,14 @@ async function handleFindImage() {
                 <ChevronLeft size={14} /> Choose a different way to add
               </button>
 
-              {/* Shared across the photo and ingredients modes below — both have a "take/choose
-                  photos" button that needs this mounted regardless of which mode is active. */}
+              {/* Shared across the photo/ingredients/meal modes below. Two separate inputs on
+                  purpose: plain accept="image/*" without `capture` is what lets the picker offer
+                  the gallery/multi-select — but on a lot of Android browsers, that same input
+                  goes straight to Photos and never offers a camera option at all. Adding a second
+                  input with capture="environment" forces the camera to open directly, so both
+                  "take a new photo" and "pick existing photos" are always reliably available. */}
               <input ref={fileInputRef} type="file" accept="image/*" multiple onChange={handleFileSelected} style={{ display: 'none' }} />
+              <input ref={cameraInputRef} type="file" accept="image/*" capture="environment" onChange={handleFileSelected} style={{ display: 'none' }} />
 
               {addMode === 'describe' ? (
                 <>
@@ -4792,20 +4798,34 @@ async function handleFindImage() {
                   )}
 
                   {pendingPhotos.length < 6 && (
-                    <button
-                      onClick={() => fileInputRef.current.click()}
-                      style={{
-                        background: pendingPhotos.length === 0 ? COLORS.rust : 'transparent',
-                        color: pendingPhotos.length === 0 ? COLORS.cream : COLORS.rust,
-                        border: pendingPhotos.length === 0 ? 'none' : `1px solid ${COLORS.rust}`,
-                        borderRadius: '3px', padding: '11px 22px', fontFamily: 'Inter, sans-serif', fontWeight: 600,
-                        fontSize: '14px', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '6px', marginRight: '8px',
-                      }}
-                    >
-                      {pendingPhotos.length === 0 ? <Camera size={16} /> : <ImagePlus size={16} />}
-                      {pendingPhotos.length === 0 ? 'Take or choose photos' : 'Add more photos'}
-                    </button>
+                    <>
+                      <button
+                        onClick={() => cameraInputRef.current.click()}
+                        style={{
+                          background: pendingPhotos.length === 0 ? COLORS.rust : 'transparent',
+                          color: pendingPhotos.length === 0 ? COLORS.cream : COLORS.rust,
+                          border: pendingPhotos.length === 0 ? 'none' : `1px solid ${COLORS.rust}`,
+                          borderRadius: '3px', padding: '11px 18px', fontFamily: 'Inter, sans-serif', fontWeight: 600,
+                          fontSize: '14px', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '6px', marginRight: '8px', marginBottom: '8px',
+                        }}
+                      >
+                        <Camera size={16} />
+                        {pendingPhotos.length === 0 ? 'Take a photo' : 'Take another'}
+                      </button>
+                      <button
+                        onClick={() => fileInputRef.current.click()}
+                        style={{
+                          background: 'transparent', color: COLORS.rust, border: `1px solid ${COLORS.rust}`,
+                          borderRadius: '3px', padding: '11px 18px', fontFamily: 'Inter, sans-serif', fontWeight: 600,
+                          fontSize: '14px', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '6px', marginRight: '8px', marginBottom: '8px',
+                        }}
+                      >
+                        <ImagePlus size={16} />
+                        Choose from library
+                      </button>
+                    </>
                   )}
+
 
                   {pendingPhotos.length > 0 && (
                     <button
@@ -4871,17 +4891,30 @@ async function handleFindImage() {
                   )}
 
                   {pendingPhotos.length < 6 && (
-                    <button
-                      onClick={() => fileInputRef.current.click()}
-                      style={{
-                        background: 'transparent', color: COLORS.rust, border: `1px solid ${COLORS.rust}`,
-                        borderRadius: '3px', padding: '10px 18px', fontFamily: 'Inter, sans-serif', fontWeight: 600,
-                        fontSize: '13.5px', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '6px', marginBottom: '16px',
-                      }}
-                    >
-                      <Camera size={15} />
-                      {pendingPhotos.length === 0 ? 'Photograph ingredients' : 'Add more photos'}
-                    </button>
+                    <>
+                      <button
+                        onClick={() => cameraInputRef.current.click()}
+                        style={{
+                          background: 'transparent', color: COLORS.rust, border: `1px solid ${COLORS.rust}`,
+                          borderRadius: '3px', padding: '10px 16px', fontFamily: 'Inter, sans-serif', fontWeight: 600,
+                          fontSize: '13.5px', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '6px', marginBottom: '16px', marginRight: '8px',
+                        }}
+                      >
+                        <Camera size={15} />
+                        {pendingPhotos.length === 0 ? 'Photograph ingredients' : 'Take another'}
+                      </button>
+                      <button
+                        onClick={() => fileInputRef.current.click()}
+                        style={{
+                          background: 'transparent', color: COLORS.rust, border: `1px solid ${COLORS.rust}`,
+                          borderRadius: '3px', padding: '10px 16px', fontFamily: 'Inter, sans-serif', fontWeight: 600,
+                          fontSize: '13.5px', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '6px', marginBottom: '16px',
+                        }}
+                      >
+                        <ImagePlus size={15} />
+                        Choose from library
+                      </button>
+                    </>
                   )}
 
                   <textarea
@@ -4931,19 +4964,32 @@ async function handleFindImage() {
                   )}
 
                   {pendingPhotos.length < 3 && (
-                    <button
-                      onClick={() => fileInputRef.current.click()}
-                      style={{
-                        background: pendingPhotos.length === 0 ? COLORS.rust : 'transparent',
-                        color: pendingPhotos.length === 0 ? COLORS.cream : COLORS.rust,
-                        border: pendingPhotos.length === 0 ? 'none' : `1px solid ${COLORS.rust}`,
-                        borderRadius: '3px', padding: '11px 22px', fontFamily: 'Inter, sans-serif', fontWeight: 600,
-                        fontSize: '14px', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '6px', marginRight: '8px',
-                      }}
-                    >
-                      {pendingPhotos.length === 0 ? <Camera size={16} /> : <ImagePlus size={16} />}
-                      {pendingPhotos.length === 0 ? 'Take or choose a photo' : 'Add another angle'}
-                    </button>
+                    <>
+                      <button
+                        onClick={() => cameraInputRef.current.click()}
+                        style={{
+                          background: pendingPhotos.length === 0 ? COLORS.rust : 'transparent',
+                          color: pendingPhotos.length === 0 ? COLORS.cream : COLORS.rust,
+                          border: pendingPhotos.length === 0 ? 'none' : `1px solid ${COLORS.rust}`,
+                          borderRadius: '3px', padding: '11px 18px', fontFamily: 'Inter, sans-serif', fontWeight: 600,
+                          fontSize: '14px', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '6px', marginRight: '8px', marginBottom: '8px',
+                        }}
+                      >
+                        <Camera size={16} />
+                        {pendingPhotos.length === 0 ? 'Take a photo' : 'Take another angle'}
+                      </button>
+                      <button
+                        onClick={() => fileInputRef.current.click()}
+                        style={{
+                          background: 'transparent', color: COLORS.rust, border: `1px solid ${COLORS.rust}`,
+                          borderRadius: '3px', padding: '11px 18px', fontFamily: 'Inter, sans-serif', fontWeight: 600,
+                          fontSize: '14px', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '6px', marginRight: '8px', marginBottom: '8px',
+                        }}
+                      >
+                        <ImagePlus size={16} />
+                        Choose from library
+                      </button>
+                    </>
                   )}
 
                   <input

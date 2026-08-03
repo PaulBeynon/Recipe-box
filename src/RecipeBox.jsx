@@ -4093,7 +4093,7 @@ async function handleFindImage() {
               </h1>
             </div>
             {view === 'grid' && index.length > 0 && !selectMode && !mealMode && (
-              <div style={{ display: 'flex', alignItems: 'flex-start', gap: '4px', flexWrap: 'nowrap', overflowX: 'auto', maxWidth: '100%', WebkitOverflowScrolling: 'touch', paddingBottom: '2px' }}>
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: '4px', flexWrap: 'nowrap', overflowX: 'auto', maxWidth: '100%', WebkitOverflowScrolling: 'touch', paddingBottom: '2px', paddingRight: '16px' }}>
                 <button
                   onClick={() => setView('shopping')}
                   style={{ position: 'relative', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '3px', flexShrink: 0, background: 'none', border: 'none', color: COLORS.cream, opacity: 0.8, cursor: 'pointer', padding: '4px 6px' }}

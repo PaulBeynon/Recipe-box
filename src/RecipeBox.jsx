@@ -4,9 +4,14 @@ import {
   AlertCircle, Pencil, Download, Minus, Utensils, ImagePlus, Check,
   Cookie, Fish, Beef, Salad, Soup, Pizza, Croissant, Egg, Wine, BookOpen, LayoutGrid, Star, Clock,
   ShoppingCart, CheckSquare, Square, ListPlus, Sparkles, Play, Pause, RotateCcw, Calendar, Copy, ExternalLink,
-  Upload, Globe, Leaf, LogOut, Mic, MicOff, Layers, HeartPulse,
+  Upload, Globe, Leaf, LogOut, Mic, MicOff, Layers, HeartPulse, Users, Share2,
 } from 'lucide-react';
 import { CLOUD_FUNCTION_URL, FETCH_PAGE_IMAGE_URL, EXTRACT_VIDEO_TEXT_URL, auth } from './firebase-init';
+import {
+  upsertPublicProfile, getPublicProfile, getOrCreateMyFriendCode, resolveFriendCode,
+  sendFriendRequest, respondToFriendRequest, removeFriend, watchFriendRequests,
+  shareRecipeWithFriend, watchIncomingShares, respondToSharedRecipe,
+} from './firebase-init';
 
 // Every Anthropic API call is routed through our own Cloud Function rather than
 // api.anthropic.com directly — the function holds the real API key server-side and
@@ -2325,6 +2330,20 @@ export default function RecipeBox({ onSignOut }) {
   const [generatingHealthyPlan, setGeneratingHealthyPlan] = useState(false);
   const [healthyPlanSummary, setHealthyPlanSummary] = useState('');
   const [healthyPlanAllowNew, setHealthyPlanAllowNew] = useState(true);
+
+  // ---------- Friends & recipe sharing ----------
+  const [friendRequestsRaw, setFriendRequestsRaw] = useState([]); // every friendRequests doc involving me
+  const [friendProfiles, setFriendProfiles] = useState({}); // uid -> { displayName }
+  const [incomingShares, setIncomingShares] = useState([]); // pending sharedRecipes docs sent to me
+  const [myFriendCode, setMyFriendCode] = useState(null);
+  const [friendCodeLoading, setFriendCodeLoading] = useState(false);
+  const [addFriendInput, setAddFriendInput] = useState('');
+  const [addFriendBusy, setAddFriendBusy] = useState(false);
+  const [addFriendMsg, setAddFriendMsg] = useState('');
+  const [friendActionBusy, setFriendActionBusy] = useState(null); // pairId currently being actioned
+  const [sharePickerRecipeId, setSharePickerRecipeId] = useState(null);
+  const [shareBusy, setShareBusy] = useState(null); // friend uid currently being shared with
+  const [shareToast, setShareToast] = useState('');
   const [ingredientsText, setIngredientsText] = useState('');
   const [mealPhotoContext, setMealPhotoContext] = useState('');
   const [generatingFromIngredients, setGeneratingFromIngredients] = useState(false);
@@ -2533,6 +2552,34 @@ export default function RecipeBox({ onSignOut }) {
     if (view !== 'cook' || !voiceMode || !detail) return;
     speakText(detail.steps[cookStepIndex] || '');
   }, [cookStepIndex, view, voiceMode, detail]);
+
+  // Mounted once per signed-in user (RecipeBox is remounted with key={user.uid} whenever the
+  // account changes). Keeps this account's public display name current for friends to see, and
+  // live-subscribes to friend requests and incoming recipe shares for the lifetime of the session.
+  useEffect(() => {
+    upsertPublicProfile().catch(() => {});
+    const unsubRequests = watchFriendRequests(setFriendRequestsRaw);
+    const unsubShares = watchIncomingShares(setIncomingShares);
+    return () => { unsubRequests(); unsubShares(); };
+  }, []);
+
+  // Resolves display names for any uid that shows up in friendRequestsRaw or incomingShares that
+  // we haven't already got a profile cached for — a friend's name is only ever a courtesy label,
+  // never used for anything security-relevant, so a plain one-off fetch per new uid is enough.
+  useEffect(() => {
+    const myUid = auth.currentUser?.uid;
+    const uids = new Set();
+    friendRequestsRaw.forEach((r) => { uids.add(r.fromUid); uids.add(r.toUid); });
+    incomingShares.forEach((s) => uids.add(s.fromUid));
+    uids.delete(myUid);
+    const missing = [...uids].filter((uid) => uid && !friendProfiles[uid]);
+    if (missing.length === 0) return;
+    missing.forEach((uid) => {
+      getPublicProfile(uid).then((profile) => {
+        setFriendProfiles((prev) => (prev[uid] ? prev : { ...prev, [uid]: profile }));
+      }).catch(() => {});
+    });
+  }, [friendRequestsRaw, incomingShares, friendProfiles]);
 
   // Starts/stops listening whenever voice mode or the current view changes. iOS Safari's
   // SpeechRecognition doesn't support true continuous listening (it ends after each utterance,
@@ -2944,6 +2991,134 @@ export default function RecipeBox({ onSignOut }) {
       setErrorMsg(`Could not put together a healthy eating plan right now (${msg || 'unknown error'}). Please try again.`);
     } finally {
       setGeneratingHealthyPlan(false);
+    }
+  }
+
+  async function loadMyFriendCode() {
+    if (myFriendCode || friendCodeLoading) return;
+    setFriendCodeLoading(true);
+    try {
+      const code = await getOrCreateMyFriendCode();
+      setMyFriendCode(code);
+    } catch {
+      setErrorMsg('Could not load your invite code — please try again.');
+    } finally {
+      setFriendCodeLoading(false);
+    }
+  }
+
+  async function handleAddFriendByCode() {
+    const code = addFriendInput.trim();
+    if (!code || addFriendBusy) return;
+    setAddFriendBusy(true);
+    setAddFriendMsg('');
+    try {
+      const otherUid = await resolveFriendCode(code);
+      if (!otherUid) {
+        setAddFriendMsg("That code doesn't match anyone — double-check it and try again.");
+        return;
+      }
+      await sendFriendRequest(otherUid);
+      setAddFriendInput('');
+      setAddFriendMsg('Friend request sent!');
+    } catch (err) {
+      const msg = err?.message || '';
+      if (msg.startsWith('SELF')) setAddFriendMsg(msg.replace('SELF: ', ''));
+      else if (msg.startsWith('ALREADY')) setAddFriendMsg(msg.replace('ALREADY: ', ''));
+      else if (msg.startsWith('PENDING')) setAddFriendMsg(msg.replace('PENDING: ', ''));
+      else setAddFriendMsg('Could not send that request — please try again.');
+    } finally {
+      setAddFriendBusy(false);
+    }
+  }
+
+  async function handleRespondFriendRequest(otherUid, accept) {
+    const pid = [auth.currentUser?.uid, otherUid].sort().join('_');
+    setFriendActionBusy(pid);
+    try {
+      await respondToFriendRequest(otherUid, accept);
+    } catch {
+      setErrorMsg('Could not update that request — please try again.');
+    } finally {
+      setFriendActionBusy(null);
+    }
+  }
+
+  async function handleRemoveFriend(otherUid) {
+    const pid = [auth.currentUser?.uid, otherUid].sort().join('_');
+    setFriendActionBusy(pid);
+    try {
+      await removeFriend(otherUid);
+    } catch {
+      setErrorMsg('Could not remove that friend — please try again.');
+    } finally {
+      setFriendActionBusy(null);
+    }
+  }
+
+  // Shares a lightweight, text-only snapshot of the recipe (no photos — keeps the in-transit
+  // doc small regardless of how large the sender's original images were). The recipient gets
+  // their own independent copy on accept; nothing stays linked back to the sender's original.
+  async function handleShareRecipeWithFriend(friendUid) {
+    if (!sharePickerRecipeId || shareBusy) return;
+    setShareBusy(friendUid);
+    try {
+      const stored = await window.storage.get(`recipe-full:${sharePickerRecipeId}`, false);
+      const full = stored ? JSON.parse(stored.value) : null;
+      if (!full) throw new Error('Recipe not found');
+      await shareRecipeWithFriend(friendUid, {
+        title: full.title || 'Untitled recipe',
+        servings: full.servings || '',
+        time: full.time || '',
+        ingredients: full.ingredients || [],
+        steps: full.steps || [],
+        tags: full.tags || [],
+      });
+      setShareToast('Recipe sent!');
+      setTimeout(() => setShareToast(''), 2500);
+      setSharePickerRecipeId(null);
+    } catch {
+      setErrorMsg('Could not share that recipe — please try again.');
+    } finally {
+      setShareBusy(null);
+    }
+  }
+
+  async function handleAcceptSharedRecipe(share) {
+    setFriendActionBusy(share.id);
+    try {
+      const r = share.recipe || {};
+      const id = uid();
+      const createdAt = Date.now();
+      const tagsArr = Array.isArray(r.tags) ? r.tags : [];
+      const ingredientsArr = Array.isArray(r.ingredients) ? r.ingredients : [];
+      const fullData = {
+        id, title: r.title || 'Untitled recipe', servings: r.servings || '', time: r.time || '',
+        ingredients: ingredientsArr, steps: Array.isArray(r.steps) ? r.steps : [], tags: tagsArr,
+        image: null, images: [], notes: `Shared by ${share.fromName || 'a friend'}`, rating: 0, createdAt,
+      };
+      await window.storage.set(`recipe-full:${id}`, JSON.stringify(fullData), false);
+      await persistIndex([
+        { id, title: fullData.title, tags: tagsArr, thumbnail: null, ingredientsPreview: ingredientsArr, time: fullData.time, rating: 0, createdAt },
+        ...index,
+      ]);
+      autoFindPhotoForRecipe(id, fullData.title, tagsArr);
+      await respondToSharedRecipe(share.id, true);
+    } catch {
+      setErrorMsg('Could not add that shared recipe — please try again.');
+    } finally {
+      setFriendActionBusy(null);
+    }
+  }
+
+  async function handleDeclineSharedRecipe(shareId) {
+    setFriendActionBusy(shareId);
+    try {
+      await respondToSharedRecipe(shareId, false);
+    } catch {
+      setErrorMsg('Could not update that — please try again.');
+    } finally {
+      setFriendActionBusy(null);
     }
   }
 
@@ -3964,6 +4139,22 @@ async function handleFindImage() {
                   <span style={{ fontSize: '8.5px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.03em' }}>Index</span>
                 </button>
                 <button
+                  onClick={() => { setView('friends'); loadMyFriendCode(); }}
+                  style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '3px', flexShrink: 0, background: 'none', border: 'none', color: COLORS.cream, opacity: 0.8, cursor: 'pointer', padding: '4px 6px', position: 'relative' }}
+                >
+                  <Users size={20} />
+                  <span style={{ fontSize: '8.5px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.03em' }}>Friends</span>
+                  {(friendRequestsRaw.filter((r) => r.status === 'pending' && r.toUid === auth.currentUser?.uid).length + incomingShares.length) > 0 && (
+                    <span style={{
+                      position: 'absolute', top: '-2px', right: '-2px', background: COLORS.mustard, color: COLORS.ink,
+                      fontSize: '9px', fontWeight: 700, borderRadius: '8px', minWidth: '15px', height: '15px',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 3px', lineHeight: 1,
+                    }}>
+                      {friendRequestsRaw.filter((r) => r.status === 'pending' && r.toUid === auth.currentUser?.uid).length + incomingShares.length}
+                    </span>
+                  )}
+                </button>
+                <button
                   onClick={exporting ? undefined : exportLibrary}
                   aria-disabled={exporting}
                   style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '3px', flexShrink: 0, background: 'none', border: 'none', color: COLORS.cream, opacity: 0.8, cursor: exporting ? 'default' : 'pointer', padding: '4px 6px', pointerEvents: exporting ? 'none' : 'auto' }}
@@ -4458,6 +4649,175 @@ async function handleFindImage() {
       )}
 
       {/* MEAL PLANNER VIEW */}
+      {view === 'friends' && (() => {
+        const myUid = auth.currentUser?.uid;
+        const incomingRequests = friendRequestsRaw.filter((r) => r.status === 'pending' && r.toUid === myUid);
+        const outgoingRequests = friendRequestsRaw.filter((r) => r.status === 'pending' && r.fromUid === myUid);
+        const friends = friendRequestsRaw.filter((r) => r.status === 'accepted');
+        const nameFor = (uid) => (uid === myUid ? 'You' : (friendProfiles[uid]?.displayName || '…'));
+
+        return (
+          <div style={{ padding: '16px' }}>
+            <button
+              onClick={() => setView('grid')}
+              style={{ display: 'flex', alignItems: 'center', gap: '4px', color: COLORS.inkFaint, background: 'none', border: 'none', cursor: 'pointer', marginBottom: '14px', fontSize: '14px', padding: 0 }}
+            >
+              <LayoutGrid size={16} /> Back to shelves
+            </button>
+
+            <h2 style={{ fontFamily: 'Fraunces, serif', fontWeight: 700, fontSize: '20px', color: COLORS.ink, marginBottom: '4px' }}>Friends</h2>
+            <p style={{ fontSize: '13px', color: COLORS.inkFaint, marginBottom: '18px' }}>Add friends to share recipes with each other, directly in the app.</p>
+
+            {/* Recipes shared with me */}
+            {incomingShares.length > 0 && (
+              <div style={{ marginBottom: '22px' }}>
+                <h3 style={{ fontSize: '13px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.03em', color: COLORS.rust, marginBottom: '8px' }}>Recipes shared with you</h3>
+                {incomingShares.map((s) => (
+                  <div key={s.id} style={{ background: COLORS.cream, border: `1px solid ${COLORS.cardBorder}`, borderRadius: '4px', padding: '12px 14px', marginBottom: '8px' }}>
+                    <p style={{ margin: '0 0 2px', fontWeight: 700, fontSize: '14.5px', color: COLORS.ink }}>{s.recipe?.title || 'Untitled recipe'}</p>
+                    <p style={{ margin: '0 0 10px', fontSize: '12.5px', color: COLORS.inkFaint }}>from {s.fromName || 'a friend'}</p>
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      <button
+                        onClick={friendActionBusy === s.id ? undefined : () => handleAcceptSharedRecipe(s)}
+                        style={{ background: COLORS.sage, color: COLORS.cream, border: 'none', borderRadius: '3px', padding: '7px 14px', fontSize: '13px', fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '5px' }}
+                      >
+                        {friendActionBusy === s.id ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />} Add to my library
+                      </button>
+                      <button
+                        onClick={friendActionBusy === s.id ? undefined : () => handleDeclineSharedRecipe(s.id)}
+                        style={{ background: 'none', color: COLORS.inkFaint, border: `1px solid ${COLORS.cardBorder}`, borderRadius: '3px', padding: '7px 14px', fontSize: '13px', fontWeight: 600, cursor: 'pointer' }}
+                      >
+                        Dismiss
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Your invite code */}
+            <div style={{ marginBottom: '22px' }}>
+              <h3 style={{ fontSize: '13px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.03em', color: COLORS.inkFaint, marginBottom: '8px' }}>Your invite code</h3>
+              <div style={{ background: COLORS.cream, border: `1px solid ${COLORS.cardBorder}`, borderRadius: '4px', padding: '14px', textAlign: 'center' }}>
+                {friendCodeLoading ? (
+                  <Loader2 size={18} className="animate-spin" color={COLORS.rust} />
+                ) : myFriendCode ? (
+                  <>
+                    <p style={{ fontFamily: 'Fraunces, serif', fontWeight: 700, fontSize: '24px', letterSpacing: '0.08em', color: COLORS.ink, margin: '0 0 10px' }}>{myFriendCode}</p>
+                    <button
+                      onClick={() => {
+                        const text = `Add me on Recipeasypeasy! My invite code is ${myFriendCode}`;
+                        if (navigator.share) navigator.share({ text }).catch(() => {});
+                        else if (navigator.clipboard) { navigator.clipboard.writeText(text); setShareToast('Copied!'); setTimeout(() => setShareToast(''), 2000); }
+                      }}
+                      style={{ background: 'none', color: COLORS.rust, border: `1px solid ${COLORS.rust}`, borderRadius: '3px', padding: '7px 16px', fontSize: '13px', fontWeight: 600, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+                    >
+                      <Share2 size={13} /> Share your code
+                    </button>
+                  </>
+                ) : (
+                  <p style={{ fontSize: '13px', color: COLORS.inkFaint, margin: 0 }}>Could not load your code.</p>
+                )}
+              </div>
+            </div>
+
+            {/* Add a friend */}
+            <div style={{ marginBottom: '22px' }}>
+              <h3 style={{ fontSize: '13px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.03em', color: COLORS.inkFaint, marginBottom: '8px' }}>Add a friend</h3>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <input
+                  type="text"
+                  value={addFriendInput}
+                  onChange={(e) => { setAddFriendInput(e.target.value); setAddFriendMsg(''); }}
+                  placeholder="Enter their invite code"
+                  style={{ ...inputStyle(), flex: 1, textTransform: 'uppercase' }}
+                />
+                <button
+                  onClick={addFriendBusy ? undefined : handleAddFriendByCode}
+                  disabled={!addFriendInput.trim() || addFriendBusy}
+                  style={{
+                    background: addFriendInput.trim() ? COLORS.rust : COLORS.cardBorder, color: COLORS.cream, border: 'none',
+                    borderRadius: '3px', padding: '0 16px', fontSize: '13px', fontWeight: 600, cursor: addFriendInput.trim() ? 'pointer' : 'default',
+                  }}
+                >
+                  {addFriendBusy ? <Loader2 size={14} className="animate-spin" /> : 'Add'}
+                </button>
+              </div>
+              {addFriendMsg && <p style={{ fontSize: '12.5px', color: COLORS.inkFaint, marginTop: '6px' }}>{addFriendMsg}</p>}
+            </div>
+
+            {/* Incoming friend requests */}
+            {incomingRequests.length > 0 && (
+              <div style={{ marginBottom: '22px' }}>
+                <h3 style={{ fontSize: '13px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.03em', color: COLORS.rust, marginBottom: '8px' }}>Friend requests</h3>
+                {incomingRequests.map((r) => (
+                  <div key={r.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: COLORS.cream, border: `1px solid ${COLORS.cardBorder}`, borderRadius: '4px', padding: '10px 14px', marginBottom: '8px' }}>
+                    <span style={{ fontSize: '14px', color: COLORS.ink }}>{nameFor(r.fromUid)}</span>
+                    <div style={{ display: 'flex', gap: '6px' }}>
+                      <button
+                        onClick={friendActionBusy === r.id ? undefined : () => handleRespondFriendRequest(r.fromUid, true)}
+                        style={{ background: COLORS.sage, color: COLORS.cream, border: 'none', borderRadius: '3px', padding: '6px 12px', fontSize: '12.5px', fontWeight: 600, cursor: 'pointer' }}
+                      >
+                        Accept
+                      </button>
+                      <button
+                        onClick={friendActionBusy === r.id ? undefined : () => handleRespondFriendRequest(r.fromUid, false)}
+                        style={{ background: 'none', color: COLORS.inkFaint, border: `1px solid ${COLORS.cardBorder}`, borderRadius: '3px', padding: '6px 12px', fontSize: '12.5px', fontWeight: 600, cursor: 'pointer' }}
+                      >
+                        Decline
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Outgoing pending requests */}
+            {outgoingRequests.length > 0 && (
+              <div style={{ marginBottom: '22px' }}>
+                <h3 style={{ fontSize: '13px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.03em', color: COLORS.inkFaint, marginBottom: '8px' }}>Pending</h3>
+                {outgoingRequests.map((r) => (
+                  <div key={r.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 2px', fontSize: '13.5px', color: COLORS.inkFaint }}>
+                    <span>{nameFor(r.toUid)} — waiting for them to accept</span>
+                    <button
+                      onClick={friendActionBusy === r.id ? undefined : () => handleRemoveFriend(r.toUid)}
+                      style={{ background: 'none', border: 'none', color: COLORS.inkFaint, cursor: 'pointer', padding: '4px' }}
+                      title="Cancel request"
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Your friends */}
+            <div>
+              <h3 style={{ fontSize: '13px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.03em', color: COLORS.inkFaint, marginBottom: '8px' }}>Your friends</h3>
+              {friends.length === 0 ? (
+                <p style={{ fontSize: '13px', color: COLORS.inkFaint }}>No friends added yet — share your invite code above to get started.</p>
+              ) : (
+                friends.map((r) => {
+                  const otherUid = r.fromUid === myUid ? r.toUid : r.fromUid;
+                  return (
+                    <div key={r.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: COLORS.cream, border: `1px solid ${COLORS.cardBorder}`, borderRadius: '4px', padding: '10px 14px', marginBottom: '8px' }}>
+                      <span style={{ fontSize: '14px', color: COLORS.ink }}>{nameFor(otherUid)}</span>
+                      <button
+                        onClick={friendActionBusy === r.id ? undefined : () => handleRemoveFriend(otherUid)}
+                        style={{ background: 'none', border: 'none', color: COLORS.inkFaint, cursor: 'pointer', padding: '4px', fontSize: '12px' }}
+                        title="Remove friend"
+                      >
+                        {friendActionBusy === r.id ? <Loader2 size={13} className="animate-spin" /> : 'Remove'}
+                      </button>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        );
+      })()}
+
       {view === 'planner' && (
         <div style={{ padding: '16px' }}>
           <button
@@ -5145,9 +5505,14 @@ async function handleFindImage() {
 
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '8px' }}>
                 <h2 style={{ fontFamily: 'Fraunces, serif', fontWeight: 700, fontSize: '22px', color: COLORS.ink, margin: '0 0 6px' }}>{detail.title}</h2>
-                <button onClick={startEditing} title="Edit recipe" style={{ background: 'none', border: 'none', color: COLORS.inkFaint, cursor: 'pointer', flexShrink: 0, padding: '4px' }}>
-                  <Pencil size={16} />
-                </button>
+                <div style={{ display: 'flex', gap: '2px', flexShrink: 0 }}>
+                  <button onClick={() => setSharePickerRecipeId(detail.id)} title="Share with a friend" style={{ background: 'none', border: 'none', color: COLORS.inkFaint, cursor: 'pointer', padding: '4px' }}>
+                    <Share2 size={16} />
+                  </button>
+                  <button onClick={startEditing} title="Edit recipe" style={{ background: 'none', border: 'none', color: COLORS.inkFaint, cursor: 'pointer', padding: '4px' }}>
+                    <Pencil size={16} />
+                  </button>
+                </div>
               </div>
 
               <div style={{ display: 'flex', gap: '14px', alignItems: 'center', color: COLORS.inkFaint, fontSize: '13px', marginBottom: '10px', flexWrap: 'wrap' }}>
@@ -5627,6 +5992,59 @@ async function handleFindImage() {
           />
         );
       })()}
+
+      {sharePickerRecipeId && (() => {
+        const myUid = auth.currentUser?.uid;
+        const friends = friendRequestsRaw.filter((r) => r.status === 'accepted');
+        return (
+          <div
+            style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 90, display: 'flex', alignItems: 'flex-end', justifyContent: 'center' }}
+            onClick={(e) => { if (e.target === e.currentTarget) setSharePickerRecipeId(null); }}
+          >
+            <div style={{ background: COLORS.paper, width: '100%', maxWidth: '420px', borderRadius: '14px 14px 0 0', padding: '18px', boxShadow: '0 -4px 20px rgba(0,0,0,0.3)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
+                <span style={{ fontFamily: 'Fraunces, serif', fontWeight: 700, fontSize: '17px', color: COLORS.ink }}>Share with a friend</span>
+                <button onClick={() => setSharePickerRecipeId(null)} style={{ background: 'none', border: 'none', color: COLORS.inkFaint, cursor: 'pointer', padding: '4px' }}>
+                  <X size={18} />
+                </button>
+              </div>
+              {friends.length === 0 ? (
+                <p style={{ fontSize: '13.5px', color: COLORS.inkFaint }}>
+                  You haven't added any friends yet. Head to the Friends tab to send or accept an invite code first.
+                </p>
+              ) : (
+                friends.map((r) => {
+                  const otherUid = r.fromUid === myUid ? r.toUid : r.fromUid;
+                  const name = friendProfiles[otherUid]?.displayName || '…';
+                  return (
+                    <button
+                      key={r.id}
+                      onClick={shareBusy ? undefined : () => handleShareRecipeWithFriend(otherUid)}
+                      style={{
+                        width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between', textAlign: 'left',
+                        background: COLORS.cream, border: `1px solid ${COLORS.cardBorder}`, borderRadius: '4px',
+                        padding: '12px 14px', marginBottom: '8px', fontSize: '14.5px', color: COLORS.ink, cursor: 'pointer',
+                      }}
+                    >
+                      {name}
+                      {shareBusy === otherUid ? <Loader2 size={15} className="animate-spin" /> : <Share2 size={15} color={COLORS.inkFaint} />}
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        );
+      })()}
+
+      {shareToast && (
+        <div style={{
+          position: 'fixed', bottom: '90px', left: '50%', transform: 'translateX(-50%)', background: COLORS.ink, color: COLORS.cream,
+          padding: '10px 18px', borderRadius: '20px', fontSize: '13.5px', fontWeight: 600, zIndex: 95, boxShadow: '0 3px 12px rgba(0,0,0,0.3)',
+        }}>
+          {shareToast}
+        </div>
+      )}
     </div>
   );
 }

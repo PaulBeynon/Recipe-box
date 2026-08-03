@@ -4,7 +4,7 @@ import {
   AlertCircle, Pencil, Download, Minus, Utensils, ImagePlus, Check,
   Cookie, Fish, Beef, Salad, Soup, Pizza, Croissant, Egg, Wine, BookOpen, LayoutGrid, Star, Clock,
   ShoppingCart, CheckSquare, Square, ListPlus, Sparkles, Play, Pause, RotateCcw, Calendar, Copy, ExternalLink,
-  Upload, Globe, Leaf, LogOut, Mic, MicOff, Layers, HeartPulse, Users, Share2,
+  Upload, Globe, Leaf, LogOut, Mic, MicOff, Layers, HeartPulse, Users, Share2, Settings,
 } from 'lucide-react';
 import { CLOUD_FUNCTION_URL, FETCH_PAGE_IMAGE_URL, EXTRACT_VIDEO_TEXT_URL, auth } from './firebase-init';
 import {
@@ -4155,37 +4155,12 @@ async function handleFindImage() {
                   )}
                 </button>
                 <button
-                  onClick={exporting ? undefined : exportLibrary}
-                  aria-disabled={exporting}
-                  style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '3px', flexShrink: 0, background: 'none', border: 'none', color: COLORS.cream, opacity: 0.8, cursor: exporting ? 'default' : 'pointer', padding: '4px 6px', pointerEvents: exporting ? 'none' : 'auto' }}
+                  onClick={() => setView('settings')}
+                  style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '3px', flexShrink: 0, background: 'none', border: 'none', color: COLORS.cream, opacity: 0.8, cursor: 'pointer', padding: '4px 6px' }}
                 >
-                  {exporting ? <Loader2 size={20} className="animate-spin" /> : <Download size={20} />}
-                  <span style={{ fontSize: '8.5px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.03em' }}>Export</span>
+                  <Settings size={20} />
+                  <span style={{ fontSize: '8.5px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.03em' }}>Settings</span>
                 </button>
-                <button
-                  onClick={importing ? undefined : () => importInputRef.current?.click()}
-                  aria-disabled={importing}
-                  style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '3px', flexShrink: 0, background: 'none', border: 'none', color: COLORS.cream, opacity: 0.8, cursor: importing ? 'default' : 'pointer', padding: '4px 6px', pointerEvents: importing ? 'none' : 'auto' }}
-                >
-                  {importing ? <Loader2 size={20} className="animate-spin" /> : <Upload size={20} />}
-                  <span style={{ fontSize: '8.5px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.03em' }}>Import</span>
-                </button>
-                <input
-                  ref={importInputRef}
-                  type="file"
-                  accept="application/json,.json"
-                  onChange={handleImportFileChange}
-                  style={{ display: 'none' }}
-                />
-                {onSignOut && (
-                  <button
-                    onClick={onSignOut}
-                    style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '3px', flexShrink: 0, background: 'none', border: 'none', color: COLORS.cream, opacity: 0.8, cursor: 'pointer', padding: '4px 6px' }}
-                  >
-                    <LogOut size={20} />
-                    <span style={{ fontSize: '8.5px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.03em' }}>Sign out</span>
-                  </button>
-                )}
               </div>
             )}
             {view === 'grid' && selectMode && (
@@ -4649,6 +4624,77 @@ async function handleFindImage() {
       )}
 
       {/* MEAL PLANNER VIEW */}
+      {view === 'settings' && (
+        <div style={{ padding: '16px' }}>
+          <button
+            onClick={() => setView('grid')}
+            style={{ display: 'flex', alignItems: 'center', gap: '4px', color: COLORS.inkFaint, background: 'none', border: 'none', cursor: 'pointer', marginBottom: '14px', fontSize: '14px', padding: 0 }}
+          >
+            <LayoutGrid size={16} /> Back to shelves
+          </button>
+
+          <h2 style={{ fontFamily: 'Fraunces, serif', fontWeight: 700, fontSize: '20px', color: COLORS.ink, marginBottom: '18px' }}>Settings</h2>
+
+          <div style={{ marginBottom: '22px' }}>
+            <h3 style={{ fontSize: '13px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.03em', color: COLORS.inkFaint, marginBottom: '8px' }}>Your library</h3>
+            <button
+              onClick={exporting ? undefined : exportLibrary}
+              aria-disabled={exporting}
+              style={{
+                width: '100%', display: 'flex', alignItems: 'center', gap: '10px', textAlign: 'left',
+                background: COLORS.cream, border: `1px solid ${COLORS.cardBorder}`, borderRadius: '4px',
+                padding: '13px 14px', marginBottom: '8px', cursor: exporting ? 'default' : 'pointer', pointerEvents: exporting ? 'none' : 'auto',
+              }}
+            >
+              {exporting ? <Loader2 size={18} className="animate-spin" color={COLORS.rust} /> : <Download size={18} color={COLORS.rust} />}
+              <div>
+                <div style={{ fontSize: '14.5px', fontWeight: 600, color: COLORS.ink }}>{exporting ? 'Exporting…' : 'Export your recipes'}</div>
+                <div style={{ fontSize: '12px', color: COLORS.inkFaint }}>Downloads everything as a backup file you can keep or share</div>
+              </div>
+            </button>
+            <button
+              onClick={importing ? undefined : () => importInputRef.current?.click()}
+              aria-disabled={importing}
+              style={{
+                width: '100%', display: 'flex', alignItems: 'center', gap: '10px', textAlign: 'left',
+                background: COLORS.cream, border: `1px solid ${COLORS.cardBorder}`, borderRadius: '4px',
+                padding: '13px 14px', cursor: importing ? 'default' : 'pointer', pointerEvents: importing ? 'none' : 'auto',
+              }}
+            >
+              {importing ? <Loader2 size={18} className="animate-spin" color={COLORS.rust} /> : <Upload size={18} color={COLORS.rust} />}
+              <div>
+                <div style={{ fontSize: '14.5px', fontWeight: 600, color: COLORS.ink }}>{importing ? 'Importing…' : 'Import a backup'}</div>
+                <div style={{ fontSize: '12px', color: COLORS.inkFaint }}>Adds recipes from a backup file alongside what's already here</div>
+              </div>
+            </button>
+            <input
+              ref={importInputRef}
+              type="file"
+              accept="application/json,.json"
+              onChange={handleImportFileChange}
+              style={{ display: 'none' }}
+            />
+          </div>
+
+          {onSignOut && (
+            <div>
+              <h3 style={{ fontSize: '13px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.03em', color: COLORS.inkFaint, marginBottom: '8px' }}>Account</h3>
+              <button
+                onClick={onSignOut}
+                style={{
+                  width: '100%', display: 'flex', alignItems: 'center', gap: '10px', textAlign: 'left',
+                  background: COLORS.cream, border: `1px solid ${COLORS.cardBorder}`, borderRadius: '4px',
+                  padding: '13px 14px', cursor: 'pointer', color: COLORS.rust,
+                }}
+              >
+                <LogOut size={18} />
+                <span style={{ fontSize: '14.5px', fontWeight: 600 }}>Sign out</span>
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
       {view === 'friends' && (() => {
         const myUid = auth.currentUser?.uid;
         const incomingRequests = friendRequestsRaw.filter((r) => r.status === 'pending' && r.toUid === myUid);

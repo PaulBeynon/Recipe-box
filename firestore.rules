@@ -46,7 +46,10 @@ service cloud.firestore {
     // One doc per possible pair of users (id = pairId of the two uids), tracking a friend
     // request from pending through to accepted/declined. Either party can read or cancel; only
     // the recipient can move a pending request to "accepted" (the sender can still "decline"
-    // their own outgoing request, i.e. cancel it).
+    // their own outgoing request, i.e. cancel it). A declined request can be re-sent by either
+    // party later (setDoc on an existing doc is an "update" in Firestore's eyes, not a "create",
+    // however the client thinks about it — so that transition has to be handled here too, not
+    // just in the create rule, or re-adding someone after a decline silently fails forever).
     match /friendRequests/{pid} {
       allow read: if request.auth != null
         && (request.auth.uid == resource.data.fromUid || request.auth.uid == resource.data.toUid);
@@ -57,12 +60,23 @@ service cloud.firestore {
         && pid == pairId(request.resource.data.fromUid, request.resource.data.toUid);
       allow update: if request.auth != null
         && (request.auth.uid == resource.data.fromUid || request.auth.uid == resource.data.toUid)
-        && request.resource.data.fromUid == resource.data.fromUid
-        && request.resource.data.toUid == resource.data.toUid
-        && resource.data.status == 'pending'
         && (
-          (request.resource.data.status == 'accepted' && request.auth.uid == resource.data.toUid)
-          || request.resource.data.status == 'declined'
+          // Accept or decline a currently-pending request.
+          (resource.data.status == 'pending'
+            && request.resource.data.fromUid == resource.data.fromUid
+            && request.resource.data.toUid == resource.data.toUid
+            && (
+              (request.resource.data.status == 'accepted' && request.auth.uid == resource.data.toUid)
+              || request.resource.data.status == 'declined'
+            ))
+          ||
+          // Re-send a request after an earlier decline — whoever initiates this becomes the new
+          // sender, but it still has to be between the same two people this doc's id is pinned to.
+          (resource.data.status == 'declined'
+            && request.resource.data.status == 'pending'
+            && request.resource.data.fromUid == request.auth.uid
+            && request.resource.data.toUid != request.auth.uid
+            && pid == pairId(request.resource.data.fromUid, request.resource.data.toUid))
         );
       allow delete: if request.auth != null
         && (request.auth.uid == resource.data.fromUid || request.auth.uid == resource.data.toUid);

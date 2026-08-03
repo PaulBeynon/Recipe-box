@@ -58,6 +58,12 @@ const googleProvider = new GoogleAuthProvider();
 // https://firebase.google.com/docs/auth/web/redirect-best-practices
 export const REDIRECT_PENDING_KEY = 'recipeBoxRedirectPending';
 
+// Shared between App.jsx (captures ?friend=CODE from a shared invite link, as early as
+// possible on load) and RecipeBox.jsx (processes it into an actual friend request once someone's
+// signed in) — living here rather than in either of those files avoids a circular import between
+// them.
+export const PENDING_FRIEND_CODE_KEY = 'recipeBoxPendingFriendCode';
+
 export function signInWithGoogle() {
   sessionStorage.setItem(REDIRECT_PENDING_KEY, '1');
   return signInWithRedirect(auth, googleProvider);

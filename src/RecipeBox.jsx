@@ -10,7 +10,7 @@ import { CLOUD_FUNCTION_URL, FETCH_PAGE_IMAGE_URL, EXTRACT_VIDEO_TEXT_URL, auth 
 import {
   upsertPublicProfile, getPublicProfile, getOrCreateMyFriendCode, resolveFriendCode,
   sendFriendRequest, respondToFriendRequest, removeFriend, watchFriendRequests,
-  shareRecipeWithFriend, watchIncomingShares, respondToSharedRecipe,
+  shareRecipeWithFriend, watchIncomingShares, respondToSharedRecipe, PENDING_FRIEND_CODE_KEY,
 } from './firebase-init';
 
 // Every Anthropic API call is routed through our own Cloud Function rather than
@@ -2563,6 +2563,38 @@ export default function RecipeBox({ onSignOut }) {
     return () => { unsubRequests(); unsubShares(); };
   }, []);
 
+  // Someone who tapped a shared "add me" link lands here with a code already waiting in
+  // sessionStorage (stashed by App.jsx before sign-in even happened, so it survives a Google
+  // redirect reload too). Firing the friend request automatically — rather than making them
+  // retype the code and press Add — is the whole point of the link; the sender still gets a
+  // normal accept/decline on their end, this only skips the recipient's half of the friction.
+  useEffect(() => {
+    const code = sessionStorage.getItem(PENDING_FRIEND_CODE_KEY);
+    if (!code) return;
+    sessionStorage.removeItem(PENDING_FRIEND_CODE_KEY); // clear first — never retry automatically
+    (async () => {
+      try {
+        const otherUid = await resolveFriendCode(code);
+        if (!otherUid) {
+          setShareToast("That invite link's code wasn't recognised.");
+        } else {
+          await sendFriendRequest(otherUid);
+          setShareToast('Friend request sent!');
+        }
+      } catch (err) {
+        const msg = err?.message || '';
+        if (msg.startsWith('SELF')) setShareToast(msg.replace('SELF: ', ''));
+        else if (msg.startsWith('ALREADY')) setShareToast(msg.replace('ALREADY: ', ''));
+        else if (msg.startsWith('PENDING')) setShareToast(msg.replace('PENDING: ', ''));
+        else setShareToast("Couldn't process that invite link.");
+      } finally {
+        setView('friends');
+        loadMyFriendCode();
+        setTimeout(() => setShareToast(''), 3500);
+      }
+    })();
+  }, []);
+
   // Resolves display names for any uid that shows up in friendRequestsRaw or incomingShares that
   // we haven't already got a profile cached for — a friend's name is only ever a courtesy label,
   // never used for anything security-relevant, so a plain one-off fetch per new uid is enough.
@@ -4752,14 +4784,18 @@ async function handleFindImage() {
                     <p style={{ fontFamily: 'Fraunces, serif', fontWeight: 700, fontSize: '24px', letterSpacing: '0.08em', color: COLORS.ink, margin: '0 0 10px' }}>{myFriendCode}</p>
                     <button
                       onClick={() => {
-                        const text = `Add me on Recipeasypeasy! My invite code is ${myFriendCode}`;
+                        const link = `${window.location.origin}${window.location.pathname}?friend=${myFriendCode}`;
+                        const text = `Add me on Recipeasypeasy! Tap this link and it'll add me automatically: ${link}`;
                         if (navigator.share) navigator.share({ text }).catch(() => {});
-                        else if (navigator.clipboard) { navigator.clipboard.writeText(text); setShareToast('Copied!'); setTimeout(() => setShareToast(''), 2000); }
+                        else if (navigator.clipboard) { navigator.clipboard.writeText(text); setShareToast('Link copied!'); setTimeout(() => setShareToast(''), 2000); }
                       }}
                       style={{ background: 'none', color: COLORS.rust, border: `1px solid ${COLORS.rust}`, borderRadius: '3px', padding: '7px 16px', fontSize: '13px', fontWeight: 600, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
                     >
-                      <Share2 size={13} /> Share your code
+                      <Share2 size={13} /> Share your invite link
                     </button>
+                    <p style={{ fontSize: '11.5px', color: COLORS.inkFaint, margin: '8px 0 0' }}>
+                      Tapping the link adds you as a friend automatically — no code to type.
+                    </p>
                   </>
                 ) : (
                   <p style={{ fontSize: '13px', color: COLORS.inkFaint, margin: 0 }}>Could not load your code.</p>

@@ -6,6 +6,31 @@ import {
   createAccountWithEmail, signInWithEmail, resetPasswordForEmail,
 } from './firebase-init';
 import RecipeBox from './RecipeBox';
+import { PENDING_FRIEND_CODE_KEY } from './firebase-init';
+
+// Captures a shared friend-invite link (?friend=CODE) the moment this script loads — before
+// auth state, before any sign-in redirect. Stashed in sessionStorage rather than acted on here,
+// since whoever opened this link might not be signed in yet (or might need to go through the
+// Google redirect flow, which reloads the page); RecipeBox picks this up once someone's actually
+// signed in and auto-sends the friend request, no manual code entry needed on the recipient's
+// side. Stripped from the visible URL immediately so it doesn't linger in the address bar or
+// get accidentally re-processed on a later plain refresh.
+(function capturePendingFriendCode() {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const code = params.get('friend');
+    if (code) {
+      sessionStorage.setItem(PENDING_FRIEND_CODE_KEY, code.trim().toUpperCase());
+      params.delete('friend');
+      const rest = params.toString();
+      const newUrl = window.location.pathname + (rest ? `?${rest}` : '') + window.location.hash;
+      window.history.replaceState({}, '', newUrl);
+    }
+  } catch {
+    // Non-critical — worst case the link just falls back to "open the app and enter the code
+    // manually", which still works fine.
+  }
+})();
 
 const COLORS = {
   paper: '#FAF3E4',

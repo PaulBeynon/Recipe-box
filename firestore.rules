@@ -1,6 +1,13 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    // Deterministic id for a pair of uids, order-independent, so both sides of a friendship
+    // (and the sharedRecipes create rule below, checking "are these two actually friends") can
+    // always find the same single doc regardless of who's asking.
+    function pairId(a, b) {
+      return a < b ? a + '_' + b : b + '_' + a;
+    }
+
     // Recipes, shopping list, meal plan — each user only ever touches their own path.
     match /users/{userId}/{document=**} {
       allow read, write: if request.auth != null && request.auth.uid == userId;
@@ -10,6 +17,78 @@ service cloud.firestore {
     // which bypasses these rules entirely), never directly by client apps.
     match /usage/{docId} {
       allow read, write: if false;
+    }
+
+    // Invite-code -> uid lookup, so "add a friend" works from a shareable code without either
+    // side needing to know the other's email. Readable by any signed-in user (that's the whole
+    // point of a link/code you can send someone), but a user can only ever create the entry for
+    // their own uid, and it's immutable once created.
+    match /friendCodes/{code} {
+      allow get: if request.auth != null;
+      allow list: if false;
+      allow create: if request.auth != null
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.keys().hasOnly(['uid', 'createdAt']);
+      allow update, delete: if false;
+    }
+
+    // Just enough to show a friend's name instead of a raw uid — nothing else about a user is
+    // exposed here. A user may only write their own doc.
+    match /publicProfiles/{uid} {
+      allow get: if request.auth != null;
+      allow list: if false;
+      allow write: if request.auth != null && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['displayName', 'updatedAt'])
+        && request.resource.data.displayName is string
+        && request.resource.data.displayName.size() <= 60;
+    }
+
+    // One doc per possible pair of users (id = pairId of the two uids), tracking a friend
+    // request from pending through to accepted/declined. Either party can read or cancel; only
+    // the recipient can move a pending request to "accepted" (the sender can still "decline"
+    // their own outgoing request, i.e. cancel it).
+    match /friendRequests/{pid} {
+      allow read: if request.auth != null
+        && (request.auth.uid == resource.data.fromUid || request.auth.uid == resource.data.toUid);
+      allow create: if request.auth != null
+        && request.resource.data.fromUid == request.auth.uid
+        && request.resource.data.toUid != request.auth.uid
+        && request.resource.data.status == 'pending'
+        && pid == pairId(request.resource.data.fromUid, request.resource.data.toUid);
+      allow update: if request.auth != null
+        && (request.auth.uid == resource.data.fromUid || request.auth.uid == resource.data.toUid)
+        && request.resource.data.fromUid == resource.data.fromUid
+        && request.resource.data.toUid == resource.data.toUid
+        && resource.data.status == 'pending'
+        && (
+          (request.resource.data.status == 'accepted' && request.auth.uid == resource.data.toUid)
+          || request.resource.data.status == 'declined'
+        );
+      allow delete: if request.auth != null
+        && (request.auth.uid == resource.data.fromUid || request.auth.uid == resource.data.toUid);
+    }
+
+    // A single shared recipe in transit from one friend to another. Creating one requires an
+    // *accepted* friendRequests doc between the two uids to already exist — sharing is only ever
+    // possible with someone who's actually a mutual friend, enforced here rather than trusted to
+    // the client. Only the recipient can accept/decline; either party can delete afterwards
+    // (cleanup) or before (sender rescinding, recipient dismissing).
+    match /sharedRecipes/{shareId} {
+      allow read: if request.auth != null
+        && (request.auth.uid == resource.data.fromUid || request.auth.uid == resource.data.toUid);
+      allow create: if request.auth != null
+        && request.resource.data.fromUid == request.auth.uid
+        && request.resource.data.toUid != request.auth.uid
+        && request.resource.data.status == 'pending'
+        && get(/databases/$(database)/documents/friendRequests/$(pairId(request.auth.uid, request.resource.data.toUid))).data.status == 'accepted';
+      allow update: if request.auth != null
+        && request.auth.uid == resource.data.toUid
+        && resource.data.status == 'pending'
+        && request.resource.data.status in ['accepted', 'declined']
+        && request.resource.data.fromUid == resource.data.fromUid
+        && request.resource.data.toUid == resource.data.toUid;
+      allow delete: if request.auth != null
+        && (request.auth.uid == resource.data.fromUid || request.auth.uid == resource.data.toUid);
     }
   }
 }

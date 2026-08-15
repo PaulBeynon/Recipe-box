@@ -1712,7 +1712,7 @@ function ConfirmDialog({ title, message, confirmLabel, cancelLabel, danger, onCo
 // Full-screen viewer for a recipe's photo(s) — tap the hero image or any secondary thumbnail
 // to open it here at full size. Supports left/right arrows, tap-zones, and touch swipe when
 // there's more than one photo.
-function PhotoLightbox({ images, index, onIndexChange, onClose }) {
+function PhotoLightbox({ images, index, onIndexChange, onClose, onMakeKey, makingKey }) {
   const touchStartX = useRef(null);
 
   function goTo(delta) {
@@ -1780,6 +1780,24 @@ function PhotoLightbox({ images, index, onIndexChange, onClose }) {
             <ChevronRight size={20} />
           </button>
         </div>
+      )}
+
+      {/* Only offer this for a photo that isn't already the hero — index 0 is always the current
+          key photo by convention (see getGalleryExtras), so there's nothing to do there. */}
+      {images.length > 1 && index !== 0 && onMakeKey && (
+        <button
+          onClick={(e) => { e.stopPropagation(); if (!makingKey) onMakeKey(index); }}
+          aria-disabled={makingKey}
+          style={{
+            display: 'flex', alignItems: 'center', gap: '6px', marginTop: '16px',
+            background: 'none', border: `1px solid ${COLORS.cream}`, color: COLORS.cream, borderRadius: '20px',
+            padding: '7px 14px', fontSize: '13px', fontWeight: 600, cursor: makingKey ? 'default' : 'pointer',
+            opacity: makingKey ? 0.6 : 1, pointerEvents: makingKey ? 'none' : 'auto',
+          }}
+        >
+          {makingKey ? <Loader2 size={14} className="animate-spin" /> : <Star size={14} />}
+          {makingKey ? 'Setting…' : 'Make key photo'}
+        </button>
       )}
     </div>
   );
@@ -2314,6 +2332,7 @@ export default function RecipeBox({ onSignOut }) {
   const [view, setView] = useState('grid'); // grid | add | detail | cook | index
   const [detail, setDetail] = useState(null);
   const [galleryIndex, setGalleryIndex] = useState(null); // index into detail.images, or null when closed
+  const [makingKeyPhoto, setMakingKeyPhoto] = useState(false);
   useEffect(() => {
     setGalleryIndex(null);
   }, [detail?.id]);
@@ -3570,6 +3589,47 @@ export default function RecipeBox({ onSignOut }) {
       setDetail((prev) => (prev && prev.id === id ? { ...prev, image: result.imageUrl, images: updated.images } : prev));
     } catch (err) {
       console.warn('autoFindPhotoForRecipe failed:', err);
+    }
+  }
+
+  // Promotes the photo at `galleryIdx` (an index into the lightbox's combined [hero, ...extras]
+  // array) to be the recipe's new hero/key photo. Mirrors the reordering used by "make key pic"
+  // in the multi-photo capture flow, but operates on an already-saved recipe: it writes straight
+  // to Firestore (via window.storage) rather than just reordering local pendingPhotos state.
+  async function handleMakeKeyPhoto(galleryIdx) {
+    if (!detail || galleryIdx <= 0) return;
+    const galleryImages = detail.image ? [detail.image, ...getGalleryExtras(detail)] : getGalleryExtras(detail);
+    if (galleryIdx >= galleryImages.length) return;
+    const newHero = galleryImages[galleryIdx];
+    const newExtras = galleryImages.filter((_, i) => i !== galleryIdx);
+
+    setMakingKeyPhoto(true);
+    try {
+      const stored = await window.storage.get(`recipe-full:${detail.id}`, false).catch(() => null);
+      const current = stored ? JSON.parse(stored.value) : detail;
+      const updated = { ...current, image: newHero, images: newExtras };
+      await window.storage.set(`recipe-full:${detail.id}`, JSON.stringify(updated), false);
+
+      const idxSnap = await window.storage.get('recipe-index', false).catch(() => null);
+      if (idxSnap) {
+        try {
+          const idxArr = JSON.parse(idxSnap.value);
+          const newIdxArr = idxArr.map((r) => (r.id === detail.id ? { ...r, thumbnail: newHero } : r));
+          await window.storage.set('recipe-index', JSON.stringify(newIdxArr), false);
+          setIndex((prev) => prev.map((r) => (r.id === detail.id ? { ...r, thumbnail: newHero } : r)));
+        } catch {
+          // Index refresh failed — the recipe itself is already saved correctly above, so just
+          // skip the grid thumbnail update rather than risk writing back bad index data.
+        }
+      }
+
+      setDetail((prev) => (prev && prev.id === detail.id ? { ...prev, image: newHero, images: newExtras } : prev));
+      setGalleryIndex(0); // the chosen photo is now the hero, at position 0 in the lightbox
+    } catch (err) {
+      console.warn('handleMakeKeyPhoto failed:', err);
+      setErrorMsg('Could not update the key photo — please try again.');
+    } finally {
+      setMakingKeyPhoto(false);
     }
   }
 
@@ -6071,6 +6131,8 @@ async function handleFindImage() {
             index={Math.min(galleryIndex, galleryImages.length - 1)}
             onIndexChange={setGalleryIndex}
             onClose={() => setGalleryIndex(null)}
+            onMakeKey={handleMakeKeyPhoto}
+            makingKey={makingKeyPhoto}
           />
         );
       })()}

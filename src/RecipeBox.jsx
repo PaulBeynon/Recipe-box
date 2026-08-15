@@ -3602,28 +3602,14 @@ export default function RecipeBox({ onSignOut }) {
     if (galleryIdx >= galleryImages.length) return;
     const newHero = galleryImages[galleryIdx];
     const newExtras = galleryImages.filter((_, i) => i !== galleryIdx);
+    const updated = { ...detail, image: newHero, images: newExtras };
 
     setMakingKeyPhoto(true);
     try {
-      const stored = await window.storage.get(`recipe-full:${detail.id}`, false).catch(() => null);
-      const current = stored ? JSON.parse(stored.value) : detail;
-      const updated = { ...current, image: newHero, images: newExtras };
-      await window.storage.set(`recipe-full:${detail.id}`, JSON.stringify(updated), false);
-
-      const idxSnap = await window.storage.get('recipe-index', false).catch(() => null);
-      if (idxSnap) {
-        try {
-          const idxArr = JSON.parse(idxSnap.value);
-          const newIdxArr = idxArr.map((r) => (r.id === detail.id ? { ...r, thumbnail: newHero } : r));
-          await window.storage.set('recipe-index', JSON.stringify(newIdxArr), false);
-          setIndex((prev) => prev.map((r) => (r.id === detail.id ? { ...r, thumbnail: newHero } : r)));
-        } catch {
-          // Index refresh failed — the recipe itself is already saved correctly above, so just
-          // skip the grid thumbnail update rather than risk writing back bad index data.
-        }
-      }
-
-      setDetail((prev) => (prev && prev.id === detail.id ? { ...prev, image: newHero, images: newExtras } : prev));
+      await window.storage.set(`recipe-full:${updated.id}`, JSON.stringify(updated), false);
+      setDetail(updated);
+      const newIndex = index.map((r) => (r.id === updated.id ? { ...r, thumbnail: newHero } : r));
+      await persistIndex(newIndex);
       setGalleryIndex(0); // the chosen photo is now the hero, at position 0 in the lightbox
     } catch (err) {
       console.warn('handleMakeKeyPhoto failed:', err);

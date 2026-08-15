@@ -46,6 +46,37 @@ function uid() {
 
 const WEEK_DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 
+// ---------- Meal planner date helpers ----------
+// The planner is a rolling 7-day window anchored on "today" rather than a fixed Monday–Sunday
+// week, so each day is stored keyed by its actual calendar date (see meal-plan-day:{YYYY-MM-DD}
+// below) rather than by weekday name alone — that's what lets scrolling forward/back show a
+// genuinely different, independently-persisted set of days instead of one recycled week.
+function startOfDay(d) {
+  const x = new Date(d);
+  x.setHours(0, 0, 0, 0);
+  return x;
+}
+function addDays(date, n) {
+  const x = new Date(date);
+  x.setDate(x.getDate() + n);
+  return x;
+}
+function dateKey(date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+function plannerDayLabel(date, today) {
+  const diffDays = Math.round((startOfDay(date) - startOfDay(today)) / 86400000);
+  if (diffDays === 0) return 'Today';
+  if (diffDays === 1) return 'Tomorrow';
+  return WEEK_DAYS[(date.getDay() + 6) % 7]; // getDay() is Sun-first; WEEK_DAYS is Mon-first
+}
+function plannerDateSubLabel(date) {
+  return date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+}
+
 // Rough UK seasonal availability by month (1 = January ... 12 = December). Not exhaustive —
 // just enough common ingredients to give a useful nudge, not a definitive almanac.
 const UK_SEASONAL_PRODUCE = {
@@ -2442,7 +2473,9 @@ export default function RecipeBox({ onSignOut }) {
   const [recentPurchases, setRecentPurchases] = useState([]); // [{ text, checkedAt }]
 
   // meal planner
-  const [mealPlan, setMealPlan] = useState(() => WEEK_DAYS.map((day) => ({ day, recipeId: null })));
+  const [weekOffset, setWeekOffset] = useState(0); // 0 = today..+6, 1 = next 7 days, -1 = previous 7 days, etc.
+  const [mealPlanByDate, setMealPlanByDate] = useState({}); // { 'YYYY-MM-DD': recipeId | null }, undefined = not loaded yet
+  const plannerTodayRef = useRef(startOfDay(new Date()));
   const [loadingMealPlan, setLoadingMealPlan] = useState(true);
   const [pickingDayIndex, setPickingDayIndex] = useState(null);
   const [plannerQuery, setPlannerQuery] = useState('');
@@ -2472,17 +2505,6 @@ export default function RecipeBox({ onSignOut }) {
         setLoadingShoppingList(false);
       }
       try {
-        const planResult = await window.storage.get('meal-plan', false);
-        if (planResult) {
-          const parsed = JSON.parse(planResult.value);
-          if (Array.isArray(parsed) && parsed.length === WEEK_DAYS.length) setMealPlan(parsed);
-        }
-      } catch {
-        // keep default empty plan
-      } finally {
-        setLoadingMealPlan(false);
-      }
-      try {
         const purchasesResult = await window.storage.get('recent-purchases', false);
         const parsed = purchasesResult ? JSON.parse(purchasesResult.value) : [];
         const cutoff = Date.now() - 10 * 24 * 60 * 60 * 1000;
@@ -2492,6 +2514,64 @@ export default function RecipeBox({ onSignOut }) {
       }
     })();
   }, []);
+
+  // Loads the currently-visible 7-day planner window, fetching only the date keys not already
+  // cached in mealPlanByDate (so scrolling back to a window you've already seen this session is
+  // instant). The very first time offset 0 loads, it also migrates any old fixed Monday–Sunday
+  // plan (a single blob, no dates) onto today's window by matching weekday names, since that's
+  // the only sensible mapping for data that was never date-stamped to begin with.
+  const mealPlanMigrationDone = useRef(false);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const windowDates = Array.from({ length: 7 }, (_, i) => addDays(plannerTodayRef.current, weekOffset * 7 + i));
+
+      if (weekOffset === 0 && !mealPlanMigrationDone.current) {
+        mealPlanMigrationDone.current = true;
+        try {
+          const legacy = await window.storage.get('meal-plan', false);
+          if (legacy) {
+            const parsed = JSON.parse(legacy.value);
+            if (Array.isArray(parsed)) {
+              await Promise.all(windowDates.map(async (date) => {
+                const dayName = WEEK_DAYS[(date.getDay() + 6) % 7];
+                const entry = parsed.find((d) => d.day === dayName && d.recipeId);
+                if (entry) {
+                  await window.storage.set(`meal-plan-day:${dateKey(date)}`, JSON.stringify({ recipeId: entry.recipeId }), false);
+                }
+              }));
+            }
+            await window.storage.delete('meal-plan', false).catch(() => {});
+          }
+        } catch {
+          // no legacy plan to migrate — nothing to do
+        }
+      }
+
+      const missing = windowDates.filter((date) => mealPlanByDate[dateKey(date)] === undefined);
+      if (missing.length === 0) return;
+
+      setLoadingMealPlan(true);
+      const entries = await Promise.all(missing.map(async (date) => {
+        const k = dateKey(date);
+        try {
+          const r = await window.storage.get(`meal-plan-day:${k}`, false);
+          const parsed = r ? JSON.parse(r.value) : null;
+          return [k, parsed?.recipeId || null];
+        } catch {
+          return [k, null];
+        }
+      }));
+      if (cancelled) return;
+      setMealPlanByDate((prev) => {
+        const next = { ...prev };
+        entries.forEach(([k, v]) => { next[k] = v; });
+        return next;
+      });
+      setLoadingMealPlan(false);
+    })();
+    return () => { cancelled = true; };
+  }, [weekOffset]);
 
   // detect a duration in the current cook-mode step and (re)set the timer whenever the step changes
   useEffect(() => {
@@ -2735,6 +2815,22 @@ export default function RecipeBox({ onSignOut }) {
     return arr;
   }, [filtered, sortBy]);
 
+  // The 7 dates currently on screen in the planner, and their plan entries. dayName is still
+  // included alongside date/dateKey because it's what the AI planning helpers (suggestPlanForEmptyDays,
+  // generateHealthyEatingPlan) key their assignments by — safe within any single 7-day window since
+  // each weekday name appears exactly once in it.
+  const windowDates = useMemo(
+    () => Array.from({ length: 7 }, (_, i) => addDays(plannerTodayRef.current, weekOffset * 7 + i)),
+    [weekOffset]
+  );
+  const currentPlan = useMemo(
+    () => windowDates.map((date) => {
+      const k = dateKey(date);
+      return { date, dateKey: k, day: WEEK_DAYS[(date.getDay() + 6) % 7], recipeId: mealPlanByDate[k] || null };
+    }),
+    [windowDates, mealPlanByDate]
+  );
+
   const uncheckedCount = useMemo(() => shoppingList.filter((it) => !it.checked).length, [shoppingList]);
 
   const groupedShoppingList = useMemo(() => {
@@ -2934,9 +3030,15 @@ export default function RecipeBox({ onSignOut }) {
   }
 
   async function persistMealPlan(newPlan) {
-    setMealPlan(newPlan);
+    setMealPlanByDate((prev) => {
+      const next = { ...prev };
+      newPlan.forEach((d) => { next[d.dateKey] = d.recipeId || null; });
+      return next;
+    });
     try {
-      await window.storage.set('meal-plan', JSON.stringify(newPlan), false);
+      await Promise.all(newPlan.map((d) =>
+        window.storage.set(`meal-plan-day:${d.dateKey}`, JSON.stringify({ recipeId: d.recipeId || null }), false)
+      ));
     } catch {
       setErrorMsg('Could not save your meal plan. Please try again.');
     }
@@ -2950,30 +3052,32 @@ export default function RecipeBox({ onSignOut }) {
 
   async function assignRecipeToDay(recipeId) {
     if (pickingDayIndex == null) return;
-    const newPlan = mealPlan.map((d, i) => (i === pickingDayIndex ? { ...d, recipeId } : d));
-    await persistMealPlan(newPlan);
+    const target = currentPlan[pickingDayIndex];
+    if (!target) return;
+    await persistMealPlan([{ dateKey: target.dateKey, recipeId }]);
     setPickingDayIndex(null);
     setView('planner');
   }
 
   async function clearDay(dayIndex) {
-    const newPlan = mealPlan.map((d, i) => (i === dayIndex ? { ...d, recipeId: null } : d));
-    await persistMealPlan(newPlan);
+    const target = currentPlan[dayIndex];
+    if (!target) return;
+    await persistMealPlan([{ dateKey: target.dateKey, recipeId: null }]);
   }
 
   async function autoFillEmptyDays() {
     if (autoFilling) return;
-    const emptyCount = mealPlan.filter((d) => !d.recipeId).length;
+    const emptyCount = currentPlan.filter((d) => !d.recipeId).length;
     if (emptyCount === 0 || index.length === 0) return;
     setAutoFilling(true);
     setErrorMsg('');
     try {
-      const assignments = await suggestPlanForEmptyDays(mealPlan, index, recentPurchases);
+      const assignments = await suggestPlanForEmptyDays(currentPlan, index, recentPurchases);
       const byDay = {};
       assignments.forEach((a) => {
         if (a && a.day && a.recipeId) byDay[a.day] = a.recipeId;
       });
-      const newPlan = mealPlan.map((d) => {
+      const newPlan = currentPlan.map((d) => {
         if (d.recipeId) return d;
         const suggestedId = byDay[d.day];
         const isValid = suggestedId && index.some((r) => r.id === suggestedId);
@@ -2990,15 +3094,15 @@ export default function RecipeBox({ onSignOut }) {
 
   async function handleGenerateHealthyPlan() {
     if (generatingHealthyPlan) return;
-    const emptyCount = mealPlan.filter((d) => !d.recipeId).length;
+    const emptyCount = currentPlan.filter((d) => !d.recipeId).length;
     if (emptyCount === 0) return;
     setGeneratingHealthyPlan(true);
     setErrorMsg('');
     setHealthyPlanSummary('');
     try {
-      const result = await generateHealthyEatingPlan(mealPlan, index, healthyPlanAllowNew);
+      const result = await generateHealthyEatingPlan(currentPlan, index, healthyPlanAllowNew);
 
-      let newPlan = mealPlan;
+      let newPlan = currentPlan;
       for (const a of result.assignments) {
         if (a?.day && a?.recipeId && WEEK_DAYS.includes(a.day) && index.some((r) => r.id === a.recipeId)) {
           newPlan = newPlan.map((d) => (d.day === a.day ? { ...d, recipeId: a.recipeId } : d));
@@ -3175,7 +3279,7 @@ export default function RecipeBox({ onSignOut }) {
 
   async function generatePlanShoppingList() {
     if (generatingPlanList) return;
-    const assignedDays = mealPlan.filter((d) => d.recipeId);
+    const assignedDays = currentPlan.filter((d) => d.recipeId);
     if (assignedDays.length === 0) return;
     setGeneratingPlanList(true);
     setErrorMsg('');
@@ -3187,8 +3291,11 @@ export default function RecipeBox({ onSignOut }) {
         })
         .filter(Boolean);
       const mergedTexts = await mergeIngredientsForShoppingList(groups);
+      const planLabel = weekOffset === 0
+        ? "This week's meal plan"
+        : `Meal plan (${plannerDateSubLabel(windowDates[0])}–${plannerDateSubLabel(windowDates[6])})`;
       const newItems = mergedTexts.map((text) => ({
-        id: uid(), text, checked: false, recipeId: 'meal-plan', recipeTitle: "This week's meal plan",
+        id: uid(), text, checked: false, recipeId: 'meal-plan', recipeTitle: planLabel,
       }));
       await persistShoppingList([...shoppingList, ...newItems]);
       setView('shopping');
@@ -4955,11 +5062,41 @@ async function handleFindImage() {
             <ChevronLeft size={16} /> Back to library
           </button>
 
-          <h2 style={{ fontFamily: 'Fraunces, serif', fontWeight: 700, fontSize: '22px', color: COLORS.ink, margin: '0 0 4px' }}>
-            This Week's Plan
-          </h2>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', margin: '0 0 4px' }}>
+            <h2 style={{ fontFamily: 'Fraunces, serif', fontWeight: 700, fontSize: '22px', color: COLORS.ink, margin: 0 }}>
+              {weekOffset === 0 ? 'Next 7 Days' : `${plannerDateSubLabel(windowDates[0])} – ${plannerDateSubLabel(windowDates[6])}`}
+            </h2>
+            <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
+              <button
+                onClick={() => setWeekOffset((o) => Math.max(0, o - 1))}
+                disabled={weekOffset === 0}
+                aria-label="Previous 7 days"
+                style={{
+                  width: '30px', height: '30px', borderRadius: '50%', border: `1px solid ${COLORS.cardBorder}`,
+                  background: COLORS.cream, color: weekOffset === 0 ? COLORS.paperDark : COLORS.ink,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  cursor: weekOffset === 0 ? 'default' : 'pointer',
+                }}
+              >
+                <ChevronLeft size={16} />
+              </button>
+              <button
+                onClick={() => setWeekOffset((o) => o + 1)}
+                aria-label="Next 7 days"
+                style={{
+                  width: '30px', height: '30px', borderRadius: '50%', border: `1px solid ${COLORS.cardBorder}`,
+                  background: COLORS.cream, color: COLORS.ink,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
+                }}
+              >
+                <ChevronRight size={16} />
+              </button>
+            </div>
+          </div>
           <p style={{ fontSize: '13px', color: COLORS.inkFaint, margin: '0 0 16px' }}>
-            Pick an evening meal for each day, then generate a combined shopping list.
+            {weekOffset === 0
+              ? 'Pick an evening meal for each day, then generate a combined shopping list.'
+              : `Planning ahead — ${plannerDateSubLabel(windowDates[0])} to ${plannerDateSubLabel(windowDates[6])}.`}
           </p>
 
           {errorMsg && (
@@ -4976,18 +5113,23 @@ async function handleFindImage() {
           ) : (
             <>
               <div style={{ background: COLORS.cream, border: `1px solid ${COLORS.cardBorder}`, borderRadius: '3px', marginBottom: '18px' }}>
-                {mealPlan.map((d, i) => {
+                {currentPlan.map((d, i) => {
                   const recipe = d.recipeId ? index.find((r) => r.id === d.recipeId) : null;
                   return (
                     <div
-                      key={d.day}
+                      key={d.dateKey}
                       style={{
                         display: 'flex', alignItems: 'center', gap: '10px', padding: '12px 14px',
-                        borderBottom: i < mealPlan.length - 1 ? `1px solid ${COLORS.paperDark}` : 'none',
+                        borderBottom: i < currentPlan.length - 1 ? `1px solid ${COLORS.paperDark}` : 'none',
                       }}
                     >
-                      <div style={{ width: '78px', flexShrink: 0, fontFamily: 'Fraunces, serif', fontWeight: 600, fontSize: '14px', color: COLORS.rustDark }}>
-                        {d.day}
+                      <div style={{ width: '58px', flexShrink: 0 }}>
+                        <div style={{ fontFamily: 'Fraunces, serif', fontWeight: 600, fontSize: '14px', color: COLORS.rustDark }}>
+                          {plannerDayLabel(d.date, plannerTodayRef.current)}
+                        </div>
+                        <div style={{ fontSize: '11px', color: COLORS.inkFaint, marginTop: '1px' }}>
+                          {plannerDateSubLabel(d.date)}
+                        </div>
                       </div>
                       {recipe ? (
                         <>
@@ -5024,7 +5166,7 @@ async function handleFindImage() {
                 })}
               </div>
 
-              {mealPlan.some((d) => !d.recipeId) && (
+              {currentPlan.some((d) => !d.recipeId) && (
                 <div style={{ marginBottom: '10px' }}>
                   <button
                     onClick={generatingHealthyPlan ? undefined : handleGenerateHealthyPlan}
@@ -5056,7 +5198,7 @@ async function handleFindImage() {
                 </div>
               )}
 
-              {mealPlan.some((d) => !d.recipeId) && index.length > 0 && (
+              {currentPlan.some((d) => !d.recipeId) && index.length > 0 && (
                 <button
                   onClick={autoFilling ? undefined : autoFillEmptyDays}
                   aria-disabled={autoFilling}
@@ -5074,14 +5216,14 @@ async function handleFindImage() {
 
 
               <button
-                onClick={generatingPlanList || mealPlan.every((d) => !d.recipeId) ? undefined : generatePlanShoppingList}
-                disabled={mealPlan.every((d) => !d.recipeId)}
+                onClick={generatingPlanList || currentPlan.every((d) => !d.recipeId) ? undefined : generatePlanShoppingList}
+                disabled={currentPlan.every((d) => !d.recipeId)}
                 aria-disabled={generatingPlanList}
                 style={{
                   width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
-                  background: mealPlan.some((d) => d.recipeId) ? COLORS.rust : COLORS.cardBorder, color: COLORS.cream,
+                  background: currentPlan.some((d) => d.recipeId) ? COLORS.rust : COLORS.cardBorder, color: COLORS.cream,
                   border: 'none', borderRadius: '3px', padding: '13px', fontWeight: 600, fontSize: '15px',
-                  cursor: mealPlan.some((d) => d.recipeId) && !generatingPlanList ? 'pointer' : 'default',
+                  cursor: currentPlan.some((d) => d.recipeId) && !generatingPlanList ? 'pointer' : 'default',
                   pointerEvents: generatingPlanList ? 'none' : 'auto',
                 }}
               >
@@ -5104,8 +5246,15 @@ async function handleFindImage() {
           </button>
 
           <h2 style={{ fontFamily: 'Fraunces, serif', fontWeight: 700, fontSize: '20px', color: COLORS.ink, margin: '0 0 4px' }}>
-            {pickingDayIndex != null ? `Choose ${WEEK_DAYS[pickingDayIndex]}'s recipe` : 'Choose a recipe'}
+            {pickingDayIndex != null && currentPlan[pickingDayIndex]
+              ? `Choose ${plannerDayLabel(currentPlan[pickingDayIndex].date, plannerTodayRef.current)}'s recipe`
+              : 'Choose a recipe'}
           </h2>
+          {pickingDayIndex != null && currentPlan[pickingDayIndex] && (
+            <p style={{ fontSize: '12.5px', color: COLORS.inkFaint, margin: '0 0 4px' }}>
+              {currentPlan[pickingDayIndex].date.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })}
+            </p>
+          )}
 
           <div style={{ position: 'relative', margin: '14px 0' }}>
             <Search size={16} color={COLORS.inkFaint} style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)' }} />

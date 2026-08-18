@@ -4407,7 +4407,17 @@ async function handleFindImage() {
                         {todaysDish.fact}
                       </p>
                       {(() => {
-                        const alreadyAdded = index.some((r) => (r.title || '').trim().toLowerCase() === todaysDish.dish.trim().toLowerCase());
+                        // The recipe is saved under Claude's generated title (e.g. "Authentic
+                        // Pad Thai" or "Pad Thai (Phat Thai)"), which rarely equals dish.dish
+                        // exactly — so an exact-match check would never flip this to "already
+                        // added". Normalise (strip punctuation/parentheticals) and count it as a
+                        // match if either title contains the other.
+                        const normDish = (s) => (s || '').toLowerCase().replace(/\(.*?\)/g, '').replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
+                        const dishNorm = normDish(todaysDish.dish);
+                        const alreadyAdded = !!dishNorm && index.some((r) => {
+                          const t = normDish(r.title);
+                          return t && (t === dishNorm || t.includes(dishNorm) || dishNorm.includes(t));
+                        });
                         return (
                           <button
                             onClick={alreadyAdded ? undefined : () => handleAddNationalDish(todaysDish)}

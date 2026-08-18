@@ -3779,6 +3779,8 @@ export default function RecipeBox({ onSignOut }) {
       }
       resetAddFlow();
       setView('grid');
+      setShareToast(`"${fullData.title}" added to your Recipeasypeasy!`);
+      setTimeout(() => setShareToast(''), 2500);
     } catch {
       setErrorMsg('Could not save this recipe. Please try again.');
     }
